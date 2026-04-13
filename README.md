@@ -318,3 +318,16 @@ FAQ
   - A: No. Everything is local, pure Python stdlib.
 - Q: Can multiple repos share the same context?
   - A: Yes. Set `CONTEXTFUN_DB` to a single global path and both Claude/Codex will use the same DB.
+Quickstart
+----------
+
+After cloning this repo, run the quickstart script to initialize a local store and print next steps:
+
+- Local project setup:
+  - `bash scripts/quickstart.sh`
+  - Creates `./.contextfun/context.db`, writes `./ctx.env` with handy alias, and runs a smoke test.
+  - Then follow the printed instructions to add the `/ctx` skill to Codex or Claude Code.
+
+- Global setup (optional):
+  - `bash scripts/quickstart.sh --global`
+  - Installs a shared CLI into `~/.contextfun` so `ctx` is available everywhere.
