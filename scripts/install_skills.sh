@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Install SKILL.md bundles into Codex/Claude skill directories by symlinking.
+# Usage:
+#   scripts/install_skills.sh --codex-dir ~/.codex/skills --claude-dir ~/.claude/skills
+
+ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
+CODEX_DIR=""
+CLAUDE_DIR=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --codex-dir) CODEX_DIR="$2"; shift 2;;
+    --claude-dir) CLAUDE_DIR="$2"; shift 2;;
+    -h|--help)
+      echo "Usage: $0 --codex-dir <path> --claude-dir <path>"; exit 0;;
+    *) echo "Unknown arg: $1" >&2; exit 2;;
+  esac
+done
+
+echo "==> Installing skills from $ROOT_DIR/skills"
+
+if [[ -n "$CODEX_DIR" ]]; then
+  echo "[Codex] Target: $CODEX_DIR"
+  mkdir -p "$CODEX_DIR"
+  for d in "$ROOT_DIR/skills/codex"/*; do
+    name=$(basename "$d")
+    src="$d"
+    dst="$CODEX_DIR/$name"
+    rm -f "$dst" 2>/dev/null || true
+    ln -s "$src" "$dst"
+    echo "  - Linked $name"
+  done
+else
+  echo "[Codex] Skipped (no --codex-dir provided)."
+fi
+
+if [[ -n "$CLAUDE_DIR" ]]; then
+  echo "[Claude] Target: $CLAUDE_DIR"
+  mkdir -p "$CLAUDE_DIR"
+  for d in "$ROOT_DIR/skills/claude"/*; do
+    name=$(basename "$d")
+    src="$d"
+    dst="$CLAUDE_DIR/$name"
+    rm -f "$dst" 2>/dev/null || true
+    ln -s "$src" "$dst"
+    echo "  - Linked $name"
+  done
+else
+  echo "[Claude] Skipped (no --claude-dir provided)."
+fi
+
+cat <<EOF
+
+Done.
+- Restart your app/CLI to pick up new skills if required.
+- Inside each skill folder, SKILL.md describes usage (calls scripts/skills/* under this repo).
+EOF
+
