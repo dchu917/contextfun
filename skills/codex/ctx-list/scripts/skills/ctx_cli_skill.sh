@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HERE="$(cd "$(dirname "$0")" && pwd)"
-SKILL_DIR="$(cd "$HERE/../../.." && pwd)"
+HERE="$(cd "$(dirname "$0")" && pwd -P)"
+SEARCH="$HERE"
+REPO=""
+for _ in 1 2 3 4 5 6 7 8; do
+  CAND="$(cd "$SEARCH/.." && pwd -P)"
+  if [[ -f "$CAND/scripts/ctx_cmd.py" ]]; then
+    REPO="$CAND"
+    break
+  fi
+  SEARCH="$CAND"
+done
 
 if command -v ctx >/dev/null 2>&1; then
   INVOKE=(ctx)
+elif [[ -n "$REPO" ]]; then
+  INVOKE=(python3 "$REPO/scripts/ctx_cmd.py")
 else
-  INVOKE=(python3 "$SKILL_DIR/scripts/ctx_cmd.py")
+  echo "ContextFun not found: install globally (ctx) or clone repo with scripts/ctx_cmd.py" >&2
+  exit 2
 fi
 
 subcmd="${1:-list}"
@@ -19,4 +31,3 @@ else
   name="$subcmd${1:+ $*}"
   "${INVOKE[@]}" go "$name" --format markdown
 fi
-
