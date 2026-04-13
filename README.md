@@ -2,7 +2,23 @@
 
 Local context manager for Claude Code and Codex.
 
-`ctx` keeps workstreams, internal sessions, imported transcript history, and resume packs in a small local SQLite database. It is designed to make agent context easier to resume, branch, and keep separate across parallel streams of work.
+Keep exact conversation bindings, resume work cleanly, and branch context without mixing streams.
+
+```text
+Claude Code chat          Codex chat
+      |                      |
+      v                      v
+   /ctx ...               ctx ...
+          \              /
+           v            v
+      +----------------------+
+      |   workstream: mono   |
+      |   claude:  abc123    |
+      |   codex:   def456    |
+      +----------------------+
+                 |
+                 +--> mono-v2 branch
+```
 
 ## Why `ctx`
 
@@ -10,17 +26,52 @@ Local context manager for Claude Code and Codex.
 - No transcript drift: later pulls stay on that bound conversation instead of jumping to the newest chat on disk.
 - Branching: start a new workstream from the current state of another one without sharing future transcript pulls.
 - Local-first: no API keys, no hosted service, plain SQLite plus local files.
-- Works with both clients:
-  - Claude Code uses skills like `/ctx ...`
-  - Codex uses installed commands like `ctx list`, `ctx start`, `ctx resume`
 
-## Quick Start
+## 3-Step Demo
 
-Recommended path after cloning:
+1. Clone and set it up:
 
 ```bash
 git clone https://github.com/dchu917/ctx.git
 cd ctx
+./setup.sh
+```
+
+2. Start a workstream:
+
+Claude Code:
+
+```text
+/ctx start mono --pull
+```
+
+Codex:
+
+```bash
+ctx start mono --pull
+```
+
+3. Come back later and resume or branch:
+
+Claude Code:
+
+```text
+/ctx resume mono
+/ctx branch mono mono-v2
+```
+
+Codex:
+
+```bash
+ctx resume mono
+ctx branch mono mono-v2
+```
+
+## Quick Start
+
+Recommended path if you already cloned the repo:
+
+```bash
 ./setup.sh
 ```
 
