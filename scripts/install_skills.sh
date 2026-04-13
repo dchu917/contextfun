@@ -6,8 +6,9 @@ set -euo pipefail
 #   scripts/install_skills.sh --codex-dir ~/.codex/skills --claude-dir ~/.claude/skills
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
-CODEX_DIR=""
-CLAUDE_DIR=""
+# Defaults based on common locations; override via flags or env vars
+CODEX_DIR="${CODEX_SKILLS_DIR:-}"
+CLAUDE_DIR="${CLAUDE_SKILLS_DIR:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -21,6 +22,9 @@ done
 
 echo "==> Installing skills from $ROOT_DIR/skills"
 
+if [[ -z "$CODEX_DIR" ]]; then
+  CODEX_DIR="$HOME/.codex/skills"
+fi
 if [[ -n "$CODEX_DIR" ]]; then
   echo "[Codex] Target: $CODEX_DIR"
   mkdir -p "$CODEX_DIR"
@@ -32,10 +36,11 @@ if [[ -n "$CODEX_DIR" ]]; then
     ln -s "$src" "$dst"
     echo "  - Linked $name"
   done
-else
-  echo "[Codex] Skipped (no --codex-dir provided)."
 fi
 
+if [[ -z "$CLAUDE_DIR" ]]; then
+  CLAUDE_DIR="$HOME/.claude/skills"
+fi
 if [[ -n "$CLAUDE_DIR" ]]; then
   echo "[Claude] Target: $CLAUDE_DIR"
   mkdir -p "$CLAUDE_DIR"
@@ -47,8 +52,6 @@ if [[ -n "$CLAUDE_DIR" ]]; then
     ln -s "$src" "$dst"
     echo "  - Linked $name"
   done
-else
-  echo "[Claude] Skipped (no --claude-dir provided)."
 fi
 
 cat <<EOF
@@ -57,4 +60,3 @@ Done.
 - Restart your app/CLI to pick up new skills if required.
 - Inside each skill folder, SKILL.md describes usage (calls scripts/skills/* under this repo).
 EOF
-

@@ -195,6 +195,22 @@ Pull transcripts from Codex / Claude
   - Claude Code: scans `CLAUDE_HOME/projects` (default `~/.claude/projects`) for the most recent `*.jsonl`/`*.json` transcript.
   - Parsed roles/content are heuristic and best-effort across common JSON/JSONL shapes.
 
+Install skills into Codex/Claude
+--------------------------------
+
+- One-shot installer (uses common defaults, override via env/flags):
+  - `CODEX_SKILLS_DIR=~/.codex/skills CLAUDE_SKILLS_DIR=~/.claude/skills bash scripts/install_skills.sh`
+  - Or explicitly: `bash scripts/install_skills.sh --codex-dir ~/.codex/skills --claude-dir ~/.claude/skills`
+- Each skill bundle has a `SKILL.md` with usage and points to scripts/skills/*.
+- If your official docs specify different skill directories, set `CODEX_SKILLS_DIR` / `CLAUDE_SKILLS_DIR` accordingly.
+
+Agent-level defaults
+--------------------
+
+- Bind an agent to a specific workstream without shell state by setting:
+  - `export CTX_AGENT_WORKSTREAM="my-workstream"`
+- The packaged skills and flows prefer `CTX_AGENT_WORKSTREAM` when `--name` is omitted.
+
 Slash-like command in any chat (Espanso)
 ----------------------------------------
 

@@ -42,6 +42,9 @@ def _connect() -> sqlite3.Connection:
 
 def _ensure_workstream(name: typing.Optional[str]) -> dict:
     # If name is provided, ensure+set-current; else prefer current, else latest by id
+    # Agent-level default: CTX_AGENT_WORKSTREAM
+    if not name:
+        name = os.getenv("CTX_AGENT_WORKSTREAM") or None
     if name:
         out = subprocess.check_output(_ctx_invocation() + ["set", name])
         # Fetch ensured row via list slugs query for robustness

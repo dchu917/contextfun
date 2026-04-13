@@ -39,6 +39,8 @@ def _connect() -> sqlite3.Connection:
 
 def _ensure_workstream(name: typing.Optional[str]) -> dict:
     # If name provided, ensure and set current via ctx_cmd
+    if not name:
+        name = os.getenv("CTX_AGENT_WORKSTREAM") or None
     if name:
         subprocess.check_output(_ctx_invocation() + ["set", name])
         with _connect() as conn:
