@@ -68,7 +68,7 @@ def ensure_home(home: Path) -> None:
     # current.json is created on demand
 
 
-def _get_current_workstream() -> dict | None:
+def _get_current_workstream():
     if CURRENT_FILE.exists():
         try:
             return json.loads(CURRENT_FILE.read_text(encoding="utf-8"))
@@ -77,7 +77,7 @@ def _get_current_workstream() -> dict | None:
     return None
 
 
-def _set_current_workstream(conn: sqlite3.Connection, *, slug: str | None, wid: int | None) -> dict:
+def _set_current_workstream(conn: sqlite3.Connection, *, slug=None, wid=None):
     if wid is not None:
         row = conn.execute("SELECT id, slug, title FROM workstream WHERE id = ?", (wid,)).fetchone()
     else:
@@ -147,7 +147,7 @@ def cmd_init(args: argparse.Namespace):
     init_db(Path(args.db))
 
 
-def parse_tags(tags: str | None) -> str:
+def parse_tags(tags):
     if not tags:
         return ""
     # Normalize: comma-separated, trimmed, de-duped
@@ -278,9 +278,7 @@ def cmd_session_show(args: argparse.Namespace):
             print("")
 
 
-def _resolve_workstream_id(
-    conn: sqlite3.Connection, *, slug: str | None, wid: int | None
-) -> int:
+def _resolve_workstream_id(conn: sqlite3.Connection, *, slug=None, wid=None) -> int:
     if wid is not None:
         row = conn.execute("SELECT id FROM workstream WHERE id = ?", (wid,)).fetchone()
         if not row:
@@ -522,7 +520,7 @@ def cmd_pack(args: argparse.Namespace):
         print("\n".join(lines))
 
 
-def _read_stdin_if_dash(text_arg: str | None) -> str | None:
+def _read_stdin_if_dash(text_arg):
     if text_arg == "-":
         return sys.stdin.read()
     return text_arg
@@ -700,6 +698,187 @@ def cmd_import(args: argparse.Namespace):
                 count_entries += 1
         conn.commit()
     print(f"Imported {count_sessions} sessions, {count_entries} entries")
+
+
+def _ensure_session_for_ingest(conn: sqlite3.Connection, workstream_slug=None, workstream_id=None, session_id=None, agent_hint=None) -> int:
+    # Prefer explicit session_id
+    if session_id:
+        row = conn.execute("SELECT id FROM session WHERE id = ?", (session_id,)).fetchone()
+        if row:
+            return int(row["id"])
+        print(f"Session {session_id} not found", file=sys.stderr)
+        sys.exit(1)
+    # Resolve workstream
+    if not (workstream_slug or workstream_id):
+        cur = _get_current_workstream()
+        if not cur:
+            print("No current workstream set; provide --workstream-slug/--workstream-id or set current.", file=sys.stderr)
+            sys.exit(2)
+        workstream_id = cur.get("id")
+    wid = _resolve_workstream_id(conn, slug=workstream_slug, wid=workstream_id)
+    # Use latest session if exists
+    row = conn.execute(
+        "SELECT id FROM session WHERE workstream_id = ? ORDER BY id DESC LIMIT 1",
+        (wid,),
+    ).fetchone()
+    if row:
+        return int(row["id"])
+    # Otherwise create a new session placeholder
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO session(workstream_id, title, agent, tags, workspace, created_at, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            wid,
+            "Auto-ingest session",
+            agent_hint or "other",
+            None,
+            None,
+            now_iso(),
+            json.dumps({"summary": "Created by ingest"}),
+        ),
+    )
+    sid = cur.lastrowid
+    conn.commit()
+    return sid
+
+
+def _chunk_text(s: str, limit: int = 4000):
+    s = s or ""
+    if len(s) <= limit:
+        return [s]
+    out = []
+    start = 0
+    while start < len(s):
+        out.append(s[start : start + limit])
+        start += limit
+    return out
+
+
+def cmd_ingest(args: argparse.Namespace):
+    db = Path(args.db)
+    init_db(db, quiet=True)
+    # Read input
+    if args.file and args.file != "-":
+        raw = Path(args.file).read_text(encoding="utf-8")
+    else:
+        raw = sys.stdin.read()
+
+    fmt = (args.format or "auto").lower()
+    entries_to_add = []  # list of dict(type, content, extras)
+    extras_common = {"source": args.source} if args.source else {}
+
+    def add_note(content, role=None):
+        ex = dict(extras_common)
+        if role:
+            ex["role"] = role
+        entries_to_add.append({"type": "note", "content": content, "extras": ex})
+
+    # Decide format
+    if fmt == "json" or (fmt == "auto" and raw.strip().startswith("{")):
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            # fall back to text
+            obj = None
+        if isinstance(obj, dict):
+            messages = None
+            # Try common shapes
+            if isinstance(obj.get("messages"), list):
+                messages = obj["messages"]
+            elif isinstance(obj.get("chat"), list):
+                messages = obj["chat"]
+            elif isinstance(obj.get("conversations"), list):
+                messages = obj["conversations"]
+            if messages:
+                for m in messages:
+                    role = m.get("role") or m.get("sender") or None
+                    content = m.get("content") or m.get("text") or ""
+                    # If content is a list of blocks
+                    if isinstance(content, list):
+                        # concatenate text-like parts
+                        text_parts = []
+                        for b in content:
+                            if isinstance(b, str):
+                                text_parts.append(b)
+                            elif isinstance(b, dict):
+                                val = b.get("text") or b.get("content") or ""
+                                if isinstance(val, str):
+                                    text_parts.append(val)
+                        content = "\n".join([t for t in text_parts if t])
+                    if not isinstance(content, str):
+                        content = str(content)
+                    if content:
+                        # Chunk long content
+                        for chunk in _chunk_text(content, limit=args.chunk):
+                            add_note(chunk, role=role)
+            else:
+                # Unknown JSON; store as a single note
+                add_note(json.dumps(obj, indent=2))
+        else:
+            # Not an object; just store text
+            for chunk in _chunk_text(raw, limit=args.chunk):
+                add_note(chunk)
+    else:
+        # Treat as text/markdown; optionally try to split by "User:" markers
+        text = raw
+        if fmt == "markdown" or fmt == "auto":
+            # Simple heuristic split for transcripts like "User:" / "Assistant:"
+            lines = text.splitlines()
+            buf = []
+            role = None
+            def flush():
+                if buf:
+                    content = "\n".join(buf).strip()
+                    if content:
+                        for chunk in _chunk_text(content, limit=args.chunk):
+                            add_note(chunk, role=role)
+            for ln in lines:
+                if ln.strip().lower().startswith("user:"):
+                    flush(); buf = []; role = "user"; ln = ln.split(":",1)[1]
+                elif ln.strip().lower().startswith("assistant:"):
+                    flush(); buf = []; role = "assistant"; ln = ln.split(":",1)[1]
+                buf.append(ln)
+            flush()
+            if entries_to_add:
+                pass
+            else:
+                for chunk in _chunk_text(text, limit=args.chunk):
+                    add_note(chunk)
+        else:
+            for chunk in _chunk_text(text, limit=args.chunk):
+                add_note(chunk)
+
+    # Insert entries
+    with connect(db) as conn:
+        sid = _ensure_session_for_ingest(
+            conn,
+            workstream_slug=args.workstream_slug,
+            workstream_id=args.workstream_id,
+            session_id=args.session_id,
+            agent_hint=args.agent,
+        )
+        cur = conn.cursor()
+        count = 0
+        for item in entries_to_add:
+            cur.execute(
+                """
+                INSERT INTO entry(session_id, type, content, extras, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    sid,
+                    item["type"],
+                    item["content"],
+                    json.dumps(item.get("extras")) if item.get("extras") else None,
+                    now_iso(),
+                ),
+            )
+            count += 1
+        conn.commit()
+    print(f"Ingested {count} chunks into session {sid}")
 
 
 def add_common_args(parser: argparse.ArgumentParser):
@@ -949,6 +1128,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("--file", default="-", help="File path or '-' for stdin")
     p_import.set_defaults(func=cmd_import)
 
+    # ingest (auto-capture transcripts or text)
+    p_ing = sp.add_parser("ingest", help="Ingest a transcript or text into a session/workstream")
+    add_common_args(p_ing)
+    g_ing_ws = p_ing.add_mutually_exclusive_group()
+    g_ing_ws.add_argument("--workstream-slug", help="Workstream slug (defaults to current if omitted)")
+    g_ing_ws.add_argument("--workstream-id", type=int, help="Workstream id")
+    p_ing.add_argument("--session-id", type=int, help="Explicit session id (otherwise latest or auto-created)")
+    p_ing.add_argument("--file", default="-", help="File path or '-' for stdin")
+    p_ing.add_argument("--format", choices=["auto", "text", "markdown", "json"], default="auto")
+    p_ing.add_argument("--source", help="Optional source label (e.g., claude, codex, openai)")
+    p_ing.add_argument("--agent", help="Agent hint if a new session must be created")
+    p_ing.add_argument("--chunk", type=int, default=4000, help="Chunk size for long text")
+    p_ing.set_defaults(func=cmd_ingest)
+
     # pack
     p_pack = sp.add_parser("pack", help="Emit a compact context pack for a workstream")
     add_common_args(p_pack)
@@ -1021,7 +1214,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None):
+def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     # Ensure home dirs
