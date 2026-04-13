@@ -29,7 +29,7 @@ Supported chat-style commands in this repo:
   - If that is unavailable, run `python3 scripts/ctx_cmd.py start [--pull] <workstream> --format markdown`.
   - `start` means create a new workstream. If that name already exists, ctx automatically creates `<workstream> (1)`, `<workstream> (2)`, and so on.
   - Do not paste the full ctx pack back unless the user asks for it.
-  - Summarize the loaded workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.
+  - Summarize the loaded workstream briefly, mention the last task that was being worked on, mention the latest relevant activity, and ask how the user wants to proceed.
   - Make it explicit that in Codex the user can inspect the full command output with `ctrl-t`, and in Claude they can expand the tool output block.
 
 - `ctx resume <workstream>`
@@ -38,7 +38,7 @@ Supported chat-style commands in this repo:
   - `resume` means continue an existing workstream. If no matching workstream exists, tell the user plainly that no matching workstream exists.
   - If the workstream belongs to a different repo, `ctx resume` should fail unless the user explicitly adds `--allow-other-repo`.
   - Do not paste the full ctx pack back unless the user asks for it.
-  - Summarize the loaded workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.
+  - Summarize the loaded workstream briefly, mention the last task that was being worked on, mention the latest relevant activity, and ask how the user wants to proceed.
   - Make it explicit that new context from this conversation will now be appended to the resumed workstream.
   - If the user wants to explore without changing that workstream, tell them to create a branch first with `ctx branch <source-workstream> <target-workstream>`.
   - Make it explicit that in Codex the user can inspect the full command output with `ctrl-t`, and in Claude they can expand the tool output block.
@@ -59,7 +59,7 @@ Supported chat-style commands in this repo:
   - If the source workstream belongs to a different repo, `ctx branch` should fail unless the user explicitly adds `--allow-other-repo`.
   - This creates a new workstream seeded from the source workstream snapshot, but future transcript pulls stay independent.
   - Do not paste the full ctx pack back unless the user asks for it.
-  - Summarize the new branch briefly, mention the latest inherited context, and ask how the user wants to proceed.
+  - Summarize the new branch briefly, mention the last task that was being worked on in the inherited context, mention the latest inherited context, and ask how the user wants to proceed.
   - Make it explicit that in Codex the user can inspect the full command output with `ctrl-t`, and in Claude they can expand the tool output block.
 
 - Compatibility aliases:

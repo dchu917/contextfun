@@ -302,6 +302,7 @@ The summary makes it clear:
 - what workstream was loaded
 - what session is being used
 - what the workstream goal is
+- what the last task was
 - what the last few items were
 
 The output also explicitly tells the user:

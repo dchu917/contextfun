@@ -767,6 +767,117 @@ def _recent_entry_rows(workstream_id: int, limit: int = 4) -> List[sqlite3.Row]:
     return meaningful[:limit] if meaningful else visible[:limit]
 
 
+def _last_task_candidate_score(row: sqlite3.Row, recency_index: int) -> int:
+    content = str(row["content"] or "").strip()
+    if not content or _looks_like_ctx_noise(content):
+        return -10_000
+    role = _entry_role(row)
+    entry_type = str(row["type"] or "").strip().lower()
+    words = len(content.split())
+    score = 0
+    if role == "user":
+        score += 34
+    elif role == "assistant":
+        score += 22
+    elif role in {"tool", "tool_call"}:
+        score -= 16
+    elif role in {"developer", "system"}:
+        score -= 100
+    elif not role:
+        score += 12
+
+    if entry_type in {"decision", "todo"}:
+        score += 24
+    elif entry_type == "note":
+        score += 10
+    elif entry_type in {"cmd", "file", "link"}:
+        score -= 8
+
+    if 8 <= words <= 90:
+        score += 14
+    elif 4 <= words < 8:
+        score += 4
+    elif words > 220:
+        score -= 10
+    else:
+        score -= 14
+
+    lowered = content.lower()
+    task_markers = (
+        "help me",
+        "can you",
+        "need to",
+        "working on",
+        "goal",
+        "debug",
+        "investigate",
+        "fix",
+        "implement",
+        "add ",
+        "rename",
+        "branch",
+        "resume",
+        "train",
+        "dataset",
+        "frontend",
+        "auth",
+        "refactor",
+    )
+    if any(marker in lowered for marker in task_markers):
+        score += 10
+    if "?" in content and role == "user":
+        score += 6
+    score += max(0, 18 - min(18, recency_index * 2))
+    return score
+
+
+def _last_task_summary(workstream_id: int, current_session_id: Optional[int] = None) -> Optional[str]:
+    db = _db_path()
+    if not db.exists():
+        return None
+    with _connect_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT e.*, s.title AS session_title
+            FROM entry e
+            JOIN session s ON s.id = e.session_id
+            WHERE s.workstream_id = ?
+            ORDER BY e.id DESC
+            LIMIT 80
+            """,
+            (workstream_id,),
+        ).fetchall()
+
+    visible = [row for row in rows if _entry_load_behavior(row) != "exclude"]
+    meaningful = [
+        row
+        for row in visible
+        if _entry_role(row) not in {"developer", "system"} and not _looks_like_ctx_noise(row["content"])
+    ]
+    if not meaningful:
+        return None
+
+    older_session_rows = (
+        [row for row in meaningful if current_session_id is None or int(row["session_id"]) != int(current_session_id)]
+        if current_session_id is not None
+        else []
+    )
+    pool = older_session_rows or meaningful
+    best_row: Optional[sqlite3.Row] = None
+    best_score: Optional[int] = None
+    for index, row in enumerate(pool):
+        score = _last_task_candidate_score(row, index)
+        if best_score is None or score > best_score:
+            best_row = row
+            best_score = score
+    if not best_row:
+        return None
+    summary = _preview_text(str(best_row["content"] or ""), limit=160)
+    if not summary:
+        return None
+    return f"S{best_row['session_id']}: {summary}"
+
+
 def _load_control_counts(workstream_id: int) -> Tuple[int, int]:
     db = _db_path()
     if not db.exists():
@@ -916,6 +1027,7 @@ def _render_loaded_output(
             max_entries=240,
         )
     goal = _workstream_goal_text(ws_row)
+    last_task = _last_task_summary(int(ws_row["id"]), current_session_id=session_id)
     links = _source_links_text(int(ws_row["id"]), session_id=session_id)
     recent_lines = []
     if recent_entries:
@@ -961,6 +1073,7 @@ def _render_loaded_output(
             f"- Action: {action_label}",
             f"- Session: {session_label}",
             f"- Goal: {goal}",
+            *( [f"- Last task: {last_task}"] if last_task else [] ),
             f"- Repo: {workspace_note}",
             f"- Linked transcripts: {links}",
             f"- Load controls: {pinned_count} pinned | {excluded_count} excluded",
@@ -975,7 +1088,7 @@ def _render_loaded_output(
             "",
             "- In Codex, press `ctrl-t` to inspect the full command output if the full pack is collapsed.",
             "- In Claude, expand the tool output block to inspect the full pack.",
-            "- Assistant: summarize this workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.",
+            "- Assistant: summarize this workstream briefly, mention the last task that was being worked on, mention the latest relevant activity, and ask how the user wants to proceed.",
             *guidance_lines_md,
             "- Assistant: do not paste the full ctx pack back unless the user explicitly asks for it.",
             "",
@@ -994,6 +1107,7 @@ def _render_loaded_output(
         f"Action: {action_label}",
         f"Session: {session_label}",
         f"Goal: {goal}",
+        *( [f"Last task: {last_task}"] if last_task else [] ),
         f"Repo: {workspace_note}",
         f"Linked transcripts: {links}",
         f"Load controls: {pinned_count} pinned | {excluded_count} excluded",
@@ -1007,7 +1121,7 @@ def _render_loaded_output(
         "How to use this load:",
         "- In Codex, press ctrl-t to inspect the full command output if the full pack is collapsed.",
         "- In Claude, expand the tool output block to inspect the full pack.",
-        "- Assistant: summarize this workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.",
+        "- Assistant: summarize this workstream briefly, mention the last task that was being worked on, mention the latest relevant activity, and ask how the user wants to proceed.",
         *guidance_lines_text,
         "- Assistant: do not paste the full ctx pack back unless the user explicitly asks for it.",
         "",
