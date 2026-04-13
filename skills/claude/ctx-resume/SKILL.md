@@ -4,10 +4,13 @@ description: Resume a ContextFun workstream, auto-pull latest Claude/Codex trans
 ---
 
 Usage
-- `python3 scripts/skills/ctx_resume_skill.py --name "<workstream>"`
-- Optional: `--paste` (macOS) to paste into the frontmost app.
+- In chat:
+  - /ctx list — lists workstreams
+  - /ctx <workstream> — resumes that workstream (markdown pack)
+- Backing command: `scripts/skills/ctx_cli_skill.sh`
+  - `./scripts/skills/ctx_cli_skill.sh list`
+  - `./scripts/skills/ctx_cli_skill.sh "<workstream>"`
 
 Notes
 - Uses local transcript storage (default `~/.claude/projects`, `~/.codex/sessions`).
 - Initialize ContextFun with `scripts/quickstart.sh`.
-
