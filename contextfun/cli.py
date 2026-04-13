@@ -1331,6 +1331,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_resume.add_argument("--focus", help="Comma-separated entry types (e.g., decision,todo)")
     p_resume.add_argument("--format", choices=["text", "markdown"], default="markdown")
     p_resume.add_argument("--brief", action="store_true", help="Header only with no details")
+    p_resume.add_argument("--max-sessions", type=int, default=5, help="Max sessions to include")
+    p_resume.add_argument("--max-entries", type=int, default=50, help="Max entries across sessions")
     def _cmd_resume(args: argparse.Namespace):
         db = Path(args.db)
         init_db(db, quiet=True)
@@ -1355,8 +1357,8 @@ def build_parser() -> argparse.ArgumentParser:
             db=args.db,
             workstream_slug=args.workstream_slug or (None if args.workstream_id else w["slug"]),
             workstream_id=args.workstream_id,
-            max_sessions=5,
-            max_entries=50,
+            max_sessions=args.max_sessions,
+            max_entries=args.max_entries,
             focus=args.focus,
             format=args.format,
             brief=args.brief,

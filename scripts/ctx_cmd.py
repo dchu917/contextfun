@@ -59,22 +59,62 @@ def create_session(agent=None, title: str = "New session"):
     return int(run_ctx(args).strip())
 
 
-def pack(slug, focus=None, fmt="markdown", brief=False):
+def pack(slug, focus=None, fmt="markdown", brief=False, max_sessions: Optional[int] = None, max_entries: Optional[int] = None):
     args = ["resume", "--workstream-slug", slug, "--format", fmt]
     if focus:
         args += ["--focus", focus]
     if brief:
         args.append("--brief")
+    if max_sessions is not None:
+        args += ["--max-sessions", str(max_sessions)]
+    if max_entries is not None:
+        args += ["--max-entries", str(max_entries)]
     return run_ctx(args)
 
 
-def workstream_pack(slug, focus=None, fmt="markdown", brief=False):
+def workstream_pack(
+    slug,
+    focus=None,
+    fmt="markdown",
+    brief=False,
+    max_sessions: Optional[int] = None,
+    max_entries: Optional[int] = None,
+):
     args = ["pack", "--workstream-slug", slug, "--format", fmt]
     if focus:
         args += ["--focus", focus]
     if brief:
         args.append("--brief")
+    if max_sessions is not None:
+        args += ["--max-sessions", str(max_sessions)]
+    if max_entries is not None:
+        args += ["--max-entries", str(max_entries)]
     return run_ctx(args)
+
+
+def _json_loads_safe(raw: Optional[str]) -> Dict[str, object]:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _preview_text(text: Optional[str], limit: int = 140) -> str:
+    value = (text or "").strip().replace("\n", " ")
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
+
+
+def _load_char_budget() -> int:
+    raw = os.getenv("CTX_LOAD_CHAR_BUDGET", "12000")
+    try:
+        return max(2000, int(raw))
+    except Exception:
+        return 12000
 
 
 def _db_path() -> Path:
@@ -178,6 +218,182 @@ def _workstream_source_links(workstream_id: int) -> List[sqlite3.Row]:
             """,
             (workstream_id,),
         ).fetchall()
+
+
+def _workstream_row_by_slug(slug: str) -> Optional[sqlite3.Row]:
+    db = _db_path()
+    if not db.exists():
+        return None
+    with _connect_db() as conn:
+        return conn.execute(
+            "SELECT * FROM workstream WHERE slug = ?",
+            (slug,),
+        ).fetchone()
+
+
+def _session_row(session_id: int) -> Optional[sqlite3.Row]:
+    db = _db_path()
+    if not db.exists():
+        return None
+    with _connect_db() as conn:
+        return conn.execute(
+            """
+            SELECT s.*, w.slug AS workstream_slug
+            FROM session s
+            LEFT JOIN workstream w ON w.id = s.workstream_id
+            WHERE s.id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+
+
+def _recent_entry_rows(workstream_id: int, limit: int = 4) -> List[sqlite3.Row]:
+    db = _db_path()
+    if not db.exists():
+        return []
+    with _connect_db() as conn:
+        return conn.execute(
+            """
+            SELECT e.*, s.title AS session_title
+            FROM entry e
+            JOIN session s ON s.id = e.session_id
+            WHERE s.workstream_id = ?
+            ORDER BY e.id DESC
+            LIMIT ?
+            """,
+            (workstream_id, limit),
+        ).fetchall()
+
+
+def _workstream_goal_text(workstream_row: sqlite3.Row) -> str:
+    meta = _json_loads_safe(workstream_row["metadata"])
+    return (
+        (workstream_row["description"] or "").strip()
+        or str(meta.get("summary") or "").strip()
+        or str(workstream_row["title"])
+    )
+
+
+def _source_links_text(workstream_id: int) -> str:
+    links = _workstream_source_links(workstream_id)
+    if not links:
+        return "none"
+    return ", ".join(f"{row['source']}:{row['external_session_id']}" for row in links)
+
+
+def _resume_pack_text(
+    slug: str,
+    *,
+    focus: Optional[str],
+    fmt: str,
+    brief: bool,
+    max_sessions: int,
+    max_entries: int,
+) -> str:
+    preamble = (
+        "You are joining an ongoing workstream. The following pack includes recent sessions and entries. "
+        "Read the pack and ask any clarifying questions before proceeding.\n\n"
+    )
+    return preamble + workstream_pack(
+        slug,
+        focus=focus,
+        fmt=fmt,
+        brief=brief,
+        max_sessions=max_sessions,
+        max_entries=max_entries,
+    )
+
+
+def _select_loaded_pack(
+    slug: str,
+    *,
+    focus: Optional[str],
+    fmt: str,
+    brief: bool,
+) -> Tuple[str, str]:
+    budget = _load_char_budget()
+    candidates = [
+        ("full", dict(focus=focus, brief=brief, max_sessions=5, max_entries=50)),
+        ("trimmed", dict(focus=focus, brief=brief, max_sessions=3, max_entries=18)),
+        ("compressed", dict(focus=(focus or "decision,todo"), brief=False, max_sessions=3, max_entries=12)),
+        ("brief", dict(focus=(focus or "decision,todo"), brief=True, max_sessions=2, max_entries=8)),
+    ]
+    fallback_text = ""
+    fallback_mode = "brief"
+    for mode, opts in candidates:
+        text = _resume_pack_text(slug, fmt=fmt, **opts)
+        fallback_text = text
+        fallback_mode = mode
+        if len(text) <= budget:
+            return mode, text
+    return fallback_mode, fallback_text
+
+
+def _render_loaded_output(
+    workstream: Dict[str, object],
+    *,
+    session_id: int,
+    action_label: str,
+    focus: Optional[str],
+    fmt: str,
+    brief: bool,
+) -> str:
+    ws_row = _workstream_row_by_slug(str(workstream["slug"]))
+    session = _session_row(session_id) if session_id else None
+    if not ws_row:
+        return _resume_pack_text(str(workstream["slug"]), focus=focus, fmt=fmt, brief=brief, max_sessions=5, max_entries=50)
+    recent_entries = _recent_entry_rows(int(ws_row["id"]), limit=4)
+    pack_mode, pack_text = _select_loaded_pack(str(workstream["slug"]), focus=focus, fmt=fmt, brief=brief)
+    goal = _workstream_goal_text(ws_row)
+    links = _source_links_text(int(ws_row["id"]))
+    recent_lines = []
+    if recent_entries:
+        for row in recent_entries:
+            recent_lines.append(
+                f"- S{row['session_id']} `{row['type']}`: {_preview_text(row['content'], limit=110)}"
+            )
+    else:
+        recent_lines.append("- No entries yet")
+
+    session_label = "n/a"
+    if session:
+        session_label = f"S{session['id']} {session['title']} (@{session['agent'] or 'n/a'}) — {session['created_at']}"
+
+    if fmt == "markdown":
+        lines = [
+            f"## ctx loaded: `{workstream['slug']}`",
+            "",
+            f"- Action: {action_label}",
+            f"- Session: {session_label}",
+            f"- Goal: {goal}",
+            f"- Linked transcripts: {links}",
+            f"- Pack mode: {pack_mode}",
+            "- Tip: In Claude/Codex, use `ctrl-o` to expand the loaded ctx block below.",
+            "",
+            "### Last things",
+            *recent_lines,
+            "",
+            "---",
+            "",
+            pack_text,
+        ]
+        return "\n".join(lines)
+
+    lines = [
+        f"ctx loaded: {workstream['slug']}",
+        f"Action: {action_label}",
+        f"Session: {session_label}",
+        f"Goal: {goal}",
+        f"Linked transcripts: {links}",
+        f"Pack mode: {pack_mode}",
+        "Tip: In Claude/Codex, use ctrl-o to expand the loaded ctx block below.",
+        "",
+        "Last things:",
+        *recent_lines,
+        "",
+        pack_text,
+    ]
+    return "\n".join(lines)
 
 
 def _external_owner(source: str, external_session_id: str) -> Optional[Dict[str, object]]:
@@ -762,16 +978,34 @@ def main():
 
     if args.cmd == "new":
         ws = ensure_workstream(args.name, set_current=True)
-        create_session(agent=args.agent)
-        sys.stdout.write(pack(ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief))
+        sid = create_session(agent=args.agent)
+        sys.stdout.write(
+            _render_loaded_output(
+                ws,
+                session_id=sid,
+                action_label="started new session",
+                focus=args.focus,
+                fmt=args.format,
+                brief=args.brief,
+            )
+        )
     elif args.cmd == "list":
         sys.stdout.write(list_workstreams() + "\n")
     elif args.cmd == "go":
         ws = ensure_workstream(args.name, set_current=True)
+        sid = ensure_session_for_workstream(ws)
         if _should_auto_pull(getattr(args, "auto_pull", False), getattr(args, "no_auto_pull", False)):
-            sid = ensure_session_for_workstream(ws)
             auto_pull(ws, sid, preferred_source=args.source)
-        sys.stdout.write(pack(ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief))
+        sys.stdout.write(
+            _render_loaded_output(
+                ws,
+                session_id=sid,
+                action_label="resumed existing session",
+                focus=args.focus,
+                fmt=args.format,
+                brief=args.brief,
+            )
+        )
     elif args.cmd == "set":
         ws = ensure_workstream(args.name, set_current=True)
         sys.stdout.write(f"Current workstream: {ws['slug']} (id {ws['id']})\n")
@@ -836,8 +1070,16 @@ def main():
             except Exception:
                 # Ignore clipboard failures silently to keep UX smooth
                 pass
-        # Finally, emit a pack so it can be pasted into the chat
-        sys.stdout.write(pack(ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief))
+        sys.stdout.write(
+            _render_loaded_output(
+                ws,
+                session_id=sid,
+                action_label="started new session",
+                focus=args.focus,
+                fmt=args.format,
+                brief=args.brief,
+            )
+        )
     elif args.cmd == "resume":
         ws = ensure_workstream(args.name, set_current=True)
         sid = ensure_session_for_workstream(ws, agent=_normalize_source(args.source) or os.getenv("CTX_AGENT_DEFAULT"))
@@ -849,7 +1091,16 @@ def main():
                 ingest_latest_from_codex(ws, sid)
             if args.pull_claude:
                 ingest_latest_from_claude(ws, sid)
-        sys.stdout.write(pack(ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief))
+        sys.stdout.write(
+            _render_loaded_output(
+                ws,
+                session_id=sid,
+                action_label="resumed existing session",
+                focus=args.focus,
+                fmt=args.format,
+                brief=args.brief,
+            )
+        )
     elif args.cmd == "branch":
         source_ws = lookup_workstream(args.source_name)
         if not source_ws:
@@ -870,17 +1121,24 @@ def main():
             f"The snapshot below is the starting context for this branch. Future work in this branch should diverge independently.\n\n"
             f"{seed}"
         )
+        run_ctx([
+            "add",
+            str(sid),
+            "--type",
+            "note",
+            "--text",
+            "-",
+        ], input_data=branch_note)
         sys.stdout.write(
-            run_ctx([
-                "add",
-                str(sid),
-                "--type",
-                "note",
-                "--text",
-                "-",
-            ], input_data=branch_note)
+            _render_loaded_output(
+                target_ws,
+                session_id=sid,
+                action_label=f"branched from {source_ws['slug']}",
+                focus=args.focus,
+                fmt=args.format,
+                brief=args.brief,
+            )
         )
-        sys.stdout.write(pack(target_ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief))
     elif args.cmd == "delete":
         if args.session_id is not None:
             sys.stdout.write(run_ctx(["session-delete", str(args.session_id)]))

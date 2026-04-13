@@ -19,11 +19,13 @@ Supported chat-style commands in this repo:
   - Run `ctx start [--pull] <workstream>`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py start [--pull] <workstream> --format markdown`.
   - Return the emitted markdown pack directly.
+  - Make it explicit that `ctrl-o` expands the loaded ctx block.
 
 - `ctx resume <workstream>`
   - Run `ctx resume <workstream>`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py resume <workstream> --format markdown`.
   - Return the emitted markdown pack directly.
+  - Make it explicit that `ctrl-o` expands the loaded ctx block.
 
 - `ctx delete <workstream>` or `ctx delete --session-id <id>`
   - Run `ctx delete ...`.
@@ -34,6 +36,7 @@ Supported chat-style commands in this repo:
   - Run `ctx branch <source-workstream> <target-workstream>`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py branch <source-workstream> <target-workstream> --format markdown`.
   - This creates a new workstream seeded from the source workstream snapshot, but future transcript pulls stay independent.
+  - Make it explicit that `ctrl-o` expands the loaded ctx block.
 
 - Compatibility aliases:
   - `ctx-list`, `ctx-start`, `ctx-resume`, `ctx-delete`, `ctx-branch`

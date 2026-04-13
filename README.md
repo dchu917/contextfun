@@ -111,6 +111,11 @@ Codex note:
 - Codex does not currently support repo-defined custom slash commands like `/ctx list`.
 - In Codex, use the installed `ctx` command with subcommands.
 - Compatibility aliases like `ctx-list`, `ctx-start`, `ctx-resume`, `ctx-delete`, and `ctx-branch` still exist, but they are no longer the primary interface.
+- When `ctx start`, `ctx resume`, or `ctx branch` load context, they now print:
+  - a short summary of what the workstream is
+  - the latest session being targeted
+  - the most recent items
+  - an explicit hint that `ctrl-o` expands the loaded ctx block in Claude/Codex
 
 ## How It Works
 
@@ -136,6 +141,30 @@ This means:
 - a new Claude/Codex conversation on disk will not silently replace the bound one
 - a workstream can be linked to one Claude conversation and one Codex conversation at the same time
 - branching creates a new workstream without inheriting the source workstream's external links
+
+## Load Output And Compression
+
+When `ctx` loads context for a workstream, it prints two layers:
+
+1. a short human-readable summary
+2. the actual loaded pack underneath
+
+The summary makes it clear:
+
+- what workstream was loaded
+- what session is being used
+- what the workstream goal is
+- what the last few items were
+
+The output also explicitly tells the user to use `ctrl-o` in Claude/Codex to expand the loaded ctx block.
+
+If the pack would be too large for a typical model context window, `ctx` automatically switches to a compressed load mode. In that case it will say so in the summary with a `Pack mode` line.
+
+You can tune the character budget with:
+
+```bash
+export CTX_LOAD_CHAR_BUDGET=12000
+```
 
 ## What `--pull` Means
 
@@ -334,3 +363,7 @@ Can multiple repos share the same context DB?
 Does deleting a ctx session delete the actual Claude/Codex chat?
 
 - No. It only deletes the internal ctx session and its stored attachments.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
