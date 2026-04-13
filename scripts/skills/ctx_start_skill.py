@@ -11,6 +11,16 @@ import typing
 ROOT = Path(__file__).resolve().parents[2]
 CTX_CMD = ROOT / "scripts" / "ctx_cmd.py"
 
+def _ctx_invocation() -> list:
+    try:
+        import shutil as _sh
+        exe = _sh.which("ctx")
+    except Exception:
+        exe = None
+    if exe:
+        return [exe]
+    return ["python3", str(CTX_CMD)]
+
 
 def _db_path() -> Path:
     env_db = os.getenv("CONTEXTFUN_DB")
@@ -30,7 +40,7 @@ def _connect() -> sqlite3.Connection:
 def _ensure_workstream(name: typing.Optional[str]) -> dict:
     # If name provided, ensure and set current via ctx_cmd
     if name:
-        subprocess.check_output(["python3", str(CTX_CMD), "set", name])
+        subprocess.check_output(_ctx_invocation() + ["set", name])
         with _connect() as conn:
             row = conn.execute(
                 "SELECT * FROM workstream WHERE slug = ? OR title = ? ORDER BY id DESC LIMIT 1",
@@ -69,13 +79,13 @@ def _create_session(agent: str) -> int:
 
 def _auto_pull():
     try:
-        subprocess.check_call(["python3", str(CTX_CMD), "pull", "--auto"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.check_call(_ctx_invocation() + ["pull", "--auto"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except subprocess.CalledProcessError:
         pass
 
 
 def _pack(slug: str, fmt: str = "markdown") -> str:
-    out = subprocess.check_output(["python3", str(CTX_CMD), "resume", slug, "--format", fmt])
+    out = subprocess.check_output(_ctx_invocation() + ["resume", slug, "--format", fmt])
     return out.decode()
 
 
@@ -145,4 +155,3 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
