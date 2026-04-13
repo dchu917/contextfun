@@ -100,7 +100,7 @@ Quickstart
 
 After cloning this repo, run:
 
-- `bash scripts/quickstart.sh`
+- `./setup.sh`
 
 That local setup does all of the following:
 
@@ -108,6 +108,11 @@ That local setup does all of the following:
 - Writes `./ctx.env`
 - Installs repo-backed `ctx-list`, `ctx-start`, and `ctx-resume` shims into `~/.contextfun/bin`
 - Links local skill folders into `~/.claude/skills` and `~/.codex/skills`
+
+Other setup modes:
+
+- Local explicit: `bash scripts/quickstart.sh`
+- Global install: `./setup.sh --global`
 
 Agent Commands
 --------------
