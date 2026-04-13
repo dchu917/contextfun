@@ -2,6 +2,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
+SHIM_DIR="${HOME}/.contextfun/bin"
 SEARCH="$HERE"
 REPO=""
 for _ in 1 2 3 4 5 6 7 8; do
@@ -13,7 +14,9 @@ for _ in 1 2 3 4 5 6 7 8; do
   SEARCH="$CAND"
 done
 
-if command -v ctx-list >/dev/null 2>&1; then
+if [[ -x "$SHIM_DIR/ctx-list" ]]; then
+  exec "$SHIM_DIR/ctx-list"
+elif command -v ctx-list >/dev/null 2>&1; then
   exec ctx-list
 elif command -v ctx >/dev/null 2>&1; then
   exec ctx list

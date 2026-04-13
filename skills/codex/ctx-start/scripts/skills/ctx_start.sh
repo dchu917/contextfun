@@ -2,6 +2,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
+SHIM_DIR="${HOME}/.contextfun/bin"
 SEARCH="$HERE"
 REPO=""
 for _ in 1 2 3 4 5 6 7 8; do
@@ -37,7 +38,9 @@ if [[ -n "$NAME" ]]; then
   CMD+=("$NAME")
 fi
 
-if command -v ctx-start >/dev/null 2>&1; then
+if [[ -x "$SHIM_DIR/ctx-start" ]]; then
+  exec "$SHIM_DIR/ctx-start" "${CMD[@]}"
+elif command -v ctx-start >/dev/null 2>&1; then
   exec ctx-start "${CMD[@]}"
 elif command -v ctx >/dev/null 2>&1; then
   exec ctx start "${CMD[@]}"
