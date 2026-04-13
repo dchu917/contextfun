@@ -167,7 +167,13 @@ def lookup_workstream(name: str) -> Optional[Dict[str, object]]:
 
 
 def current_workstream() -> Optional[Dict[str, object]]:
-    cur_file = ROOT / ".contextfun" / "current.json"
+    home = _db_path().parent
+    slot = os.getenv("CTX_AGENT_SLOT") or os.getenv("CTX_AGENT_KEY")
+    if slot:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", str(slot)).strip("-")
+        cur_file = home / f"current.{safe}.json"
+    else:
+        cur_file = home / "current.json"
     if not cur_file.exists():
         return None
     try:
@@ -181,6 +187,14 @@ def _connect_db() -> sqlite3.Connection:
     conn = sqlite3.connect(str(_db_path()))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (name,),
+    ).fetchone()
+    return row is not None
 
 
 def latest_session_id(workstream_slug: Optional[str] = None, workstream_id: Optional[int] = None) -> Optional[int]:
@@ -208,11 +222,169 @@ def latest_session_id(workstream_slug: Optional[str] = None, workstream_id: Opti
         return int(row["id"]) if row else None
 
 
-def ensure_session_for_workstream(workstream: Dict[str, object], agent: Optional[str] = None) -> int:
-    sid = latest_session_id(workstream_slug=str(workstream["slug"]))
-    if sid is not None:
-        return sid
-    return create_session(agent=agent)
+def _create_session_for_workstream(workstream: Dict[str, object], agent: Optional[str] = None, title: str = "New session") -> int:
+    sid = create_session(agent=agent, title=title)
+    with _connect_db() as conn:
+        conn.execute(
+            "UPDATE session SET workstream_id = ? WHERE id = ?",
+            (int(workstream["id"]), sid),
+        )
+        conn.commit()
+    return sid
+
+
+def _session_rows_for_workstream(workstream_id: int) -> List[sqlite3.Row]:
+    db = _db_path()
+    if not db.exists():
+        return []
+    with _connect_db() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM session
+            WHERE workstream_id = ?
+            ORDER BY id DESC
+            """,
+            (workstream_id,),
+        ).fetchall()
+
+
+def _session_source_links_for_workstream(workstream_id: int) -> List[sqlite3.Row]:
+    db = _db_path()
+    if not db.exists():
+        return []
+    with _connect_db() as conn:
+        if not _table_exists(conn, "session_source_link"):
+            return []
+        return conn.execute(
+            """
+            SELECT * FROM session_source_link
+            WHERE workstream_id = ?
+            ORDER BY updated_at DESC, id DESC
+            """,
+            (workstream_id,),
+        ).fetchall()
+
+
+def _session_source_links_for_session(session_id: int) -> List[sqlite3.Row]:
+    db = _db_path()
+    if not db.exists():
+        return []
+    with _connect_db() as conn:
+        if not _table_exists(conn, "session_source_link"):
+            return []
+        return conn.execute(
+            """
+            SELECT * FROM session_source_link
+            WHERE session_id = ?
+            ORDER BY source ASC
+            """,
+            (session_id,),
+        ).fetchall()
+
+
+def _session_source_link(session_id: int, source: str) -> Optional[sqlite3.Row]:
+    db = _db_path()
+    if not db.exists():
+        return None
+    with _connect_db() as conn:
+        if not _table_exists(conn, "session_source_link"):
+            return None
+        return conn.execute(
+            """
+            SELECT * FROM session_source_link
+            WHERE session_id = ? AND source = ?
+            """,
+            (session_id, source),
+        ).fetchone()
+
+
+def _backfill_session_links_for_workstream(workstream_id: int) -> None:
+    db = _db_path()
+    if not db.exists():
+        return
+    with _connect_db() as conn:
+        if not _table_exists(conn, "session_source_link") or not _table_exists(conn, "workstream_source_link"):
+            return
+        existing = conn.execute(
+            "SELECT 1 FROM session_source_link WHERE workstream_id = ? LIMIT 1",
+            (workstream_id,),
+        ).fetchone()
+        if existing:
+            return
+        latest_session = conn.execute(
+            """
+            SELECT id FROM session
+            WHERE workstream_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (workstream_id,),
+        ).fetchone()
+        if not latest_session:
+            return
+        legacy_links = conn.execute(
+            """
+            SELECT * FROM workstream_source_link
+            WHERE workstream_id = ?
+            ORDER BY id ASC
+            """,
+            (workstream_id,),
+        ).fetchall()
+        for link in legacy_links:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO session_source_link(
+                    session_id, workstream_id, source, external_session_id,
+                    transcript_path, transcript_mtime, message_count,
+                    created_at, updated_at, metadata
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(latest_session["id"]),
+                    workstream_id,
+                    link["source"],
+                    link["external_session_id"],
+                    link["transcript_path"],
+                    link["transcript_mtime"],
+                    link["message_count"],
+                    link["created_at"],
+                    link["updated_at"],
+                    link["metadata"],
+                ),
+            )
+        conn.commit()
+
+
+def _latest_detached_session_id(workstream_id: int) -> Optional[int]:
+    _backfill_session_links_for_workstream(workstream_id)
+    db = _db_path()
+    if not db.exists():
+        return None
+    with _connect_db() as conn:
+        if not _table_exists(conn, "session_source_link"):
+            row = conn.execute(
+                """
+                SELECT id FROM session
+                WHERE workstream_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (workstream_id,),
+            ).fetchone()
+            return int(row["id"]) if row else None
+        row = conn.execute(
+            """
+            SELECT s.id
+            FROM session s
+            LEFT JOIN session_source_link l ON l.session_id = s.id
+            WHERE s.workstream_id = ? AND l.id IS NULL
+            ORDER BY s.id DESC
+            LIMIT 1
+            """,
+            (workstream_id,),
+        ).fetchone()
+        return int(row["id"]) if row else None
 
 
 def _workstream_source_link(workstream_id: int, source: str) -> Optional[sqlite3.Row]:
@@ -300,7 +472,18 @@ def _workstream_goal_text(workstream_row: sqlite3.Row) -> str:
     )
 
 
-def _source_links_text(workstream_id: int) -> str:
+def _source_links_text(workstream_id: int, session_id: Optional[int] = None) -> str:
+    if session_id is not None:
+        links = _session_source_links_for_session(session_id)
+        if links:
+            return ", ".join(f"{row['source']}:{row['external_session_id']}" for row in links)
+    _backfill_session_links_for_workstream(workstream_id)
+    links = _session_source_links_for_workstream(workstream_id)
+    if links:
+        return ", ".join(
+            f"{row['source']}:{row['external_session_id']}->S{row['session_id']}"
+            for row in links
+        )
     links = _workstream_source_links(workstream_id)
     if not links:
         return "none"
@@ -371,7 +554,7 @@ def _render_loaded_output(
     recent_entries = _recent_entry_rows(int(ws_row["id"]), limit=4)
     pack_mode, pack_text = _select_loaded_pack(str(workstream["slug"]), focus=focus, fmt=fmt, brief=brief)
     goal = _workstream_goal_text(ws_row)
-    links = _source_links_text(int(ws_row["id"]))
+    links = _source_links_text(int(ws_row["id"]), session_id=session_id)
     recent_lines = []
     if recent_entries:
         for row in recent_entries:
@@ -446,21 +629,39 @@ def _external_owner(source: str, external_session_id: str) -> Optional[Dict[str,
     if not db.exists():
         return None
     with _connect_db() as conn:
-        row = conn.execute(
-            """
-            SELECT l.workstream_id, w.slug, w.title
-            FROM workstream_source_link l
-            JOIN workstream w ON w.id = l.workstream_id
-            WHERE l.source = ? AND l.external_session_id = ?
-            """,
-            (source, external_session_id),
-        ).fetchone()
+        row = None
+        if _table_exists(conn, "session_source_link"):
+            row = conn.execute(
+                """
+                SELECT l.session_id, l.workstream_id, w.slug, w.title
+                FROM session_source_link l
+                JOIN workstream w ON w.id = l.workstream_id
+                WHERE l.source = ? AND l.external_session_id = ?
+                """,
+                (source, external_session_id),
+            ).fetchone()
+        if row is None and _table_exists(conn, "workstream_source_link"):
+            row = conn.execute(
+                """
+                SELECT NULL AS session_id, l.workstream_id, w.slug, w.title
+                FROM workstream_source_link l
+                JOIN workstream w ON w.id = l.workstream_id
+                WHERE l.source = ? AND l.external_session_id = ?
+                """,
+                (source, external_session_id),
+            ).fetchone()
     if not row:
         return None
-    return {"id": int(row["workstream_id"]), "slug": row["slug"], "title": row["title"]}
+    return {
+        "session_id": int(row["session_id"]) if row["session_id"] is not None else None,
+        "id": int(row["workstream_id"]),
+        "slug": row["slug"],
+        "title": row["title"],
+    }
 
 
-def _upsert_workstream_source_link(
+def _upsert_session_source_link(
+    session_id: int,
     workstream_id: int,
     source: str,
     external_session_id: str,
@@ -469,21 +670,25 @@ def _upsert_workstream_source_link(
     message_count: int,
 ) -> None:
     with _connect_db() as conn:
+        if not _table_exists(conn, "session_source_link"):
+            return
         conn.execute(
             """
-            INSERT INTO workstream_source_link(
-                workstream_id, source, external_session_id, transcript_path,
+            INSERT INTO session_source_link(
+                session_id, workstream_id, source, external_session_id, transcript_path,
                 transcript_mtime, message_count, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-            ON CONFLICT(workstream_id, source) DO UPDATE SET
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(session_id, source) DO UPDATE SET
                 external_session_id = excluded.external_session_id,
+                workstream_id = excluded.workstream_id,
                 transcript_path = excluded.transcript_path,
                 transcript_mtime = excluded.transcript_mtime,
                 message_count = excluded.message_count,
                 updated_at = datetime('now')
             """,
             (
+                session_id,
                 workstream_id,
                 source,
                 external_session_id,
@@ -774,7 +979,28 @@ def _normalize_source(source: Optional[str]) -> Optional[str]:
     return s if s in {"codex", "claude"} else None
 
 
-def _ingest_candidate_for_workstream(
+def _find_session_for_external(workstream_id: int, source: str, external_session_id: str) -> Optional[int]:
+    _backfill_session_links_for_workstream(workstream_id)
+    db = _db_path()
+    if not db.exists():
+        return None
+    with _connect_db() as conn:
+        if not _table_exists(conn, "session_source_link"):
+            return None
+        row = conn.execute(
+            """
+            SELECT session_id
+            FROM session_source_link
+            WHERE workstream_id = ? AND source = ? AND external_session_id = ?
+            ORDER BY session_id DESC
+            LIMIT 1
+            """,
+            (workstream_id, source, external_session_id),
+        ).fetchone()
+    return int(row["session_id"]) if row else None
+
+
+def _ingest_candidate_for_session(
     workstream: Dict[str, object],
     session_id: int,
     candidate: Dict[str, object],
@@ -784,14 +1010,17 @@ def _ingest_candidate_for_workstream(
     source = str(candidate["source"])
     external_session_id = str(candidate["external_session_id"])
     owner = _external_owner(source, external_session_id)
-    if owner and int(owner["id"]) != int(workstream["id"]) and not force_bind:
+    if owner and owner.get("session_id") is not None and int(owner["session_id"]) != int(session_id) and not force_bind:
         print(
-            f"Skipping {source} transcript {external_session_id}: already linked to workstream {owner['slug']}",
+            (
+                f"Skipping {source} transcript {external_session_id}: "
+                f"already linked to session S{owner['session_id']} in workstream {owner['slug']}"
+            ),
             file=sys.stderr,
         )
         return False
 
-    link = _workstream_source_link(int(workstream["id"]), source)
+    link = _session_source_link(int(session_id), source)
     previous_count = int(link["message_count"]) if link else 0
     messages = list(candidate["messages"])
     if previous_count > len(messages):
@@ -799,7 +1028,8 @@ def _ingest_candidate_for_workstream(
     delta = messages[previous_count:]
     if delta:
         ingest_messages(delta, source_label=source, session_id=session_id)
-    _upsert_workstream_source_link(
+    _upsert_session_source_link(
+        int(session_id),
         int(workstream["id"]),
         source,
         external_session_id,
@@ -810,7 +1040,7 @@ def _ingest_candidate_for_workstream(
     return bool(delta)
 
 
-def _pull_source_for_workstream(
+def _pull_source_for_session(
     workstream: Dict[str, object],
     session_id: int,
     source: str,
@@ -818,7 +1048,7 @@ def _pull_source_for_workstream(
     source = _normalize_source(source)
     if not source:
         return False
-    link = _workstream_source_link(int(workstream["id"]), source)
+    link = _session_source_link(int(session_id), source)
     candidate = None
     if link:
         linked_path = Path(link["transcript_path"]) if link["transcript_path"] else None
@@ -834,12 +1064,12 @@ def _pull_source_for_workstream(
                 file=sys.stderr,
             )
             return False
-        return _ingest_candidate_for_workstream(workstream, session_id, candidate)
+        return _ingest_candidate_for_session(workstream, session_id, candidate)
 
     candidate = _latest_transcript_for_source(source)
     if candidate is None:
         return False
-    return _ingest_candidate_for_workstream(workstream, session_id, candidate)
+    return _ingest_candidate_for_session(workstream, session_id, candidate)
 
 
 def _choose_initial_candidate(preferred_source: Optional[str]) -> Optional[Dict[str, object]]:
@@ -859,8 +1089,14 @@ def _choose_initial_candidate(preferred_source: Optional[str]) -> Optional[Dict[
     return candidates[0]
 
 
-def auto_pull(workstream: Dict[str, object], session_id: int, preferred_source: Optional[str] = None) -> Tuple[bool, Optional[str]]:
-    links = _workstream_source_links(int(workstream["id"]))
+def auto_pull(
+    workstream: Dict[str, object],
+    session_id: int,
+    preferred_source: Optional[str] = None,
+    initial_candidate: Optional[Dict[str, object]] = None,
+) -> Tuple[bool, Optional[str]]:
+    _backfill_session_links_for_workstream(int(workstream["id"]))
+    links = _session_source_links_for_session(int(session_id))
     if links:
         pulled_sources: List[str] = []
         any_updates = False
@@ -869,24 +1105,70 @@ def auto_pull(workstream: Dict[str, object], session_id: int, preferred_source: 
         if preferred and preferred in ordered_sources:
             ordered_sources = [preferred] + [s for s in ordered_sources if s != preferred]
         for source in ordered_sources:
-            ok = _pull_source_for_workstream(workstream, session_id, source)
+            ok = _pull_source_for_session(workstream, session_id, source)
             any_updates = any_updates or ok
             pulled_sources.append(source)
         return any_updates, ",".join(pulled_sources)
 
-    candidate = _choose_initial_candidate(preferred_source)
+    candidate = initial_candidate or _choose_initial_candidate(preferred_source)
     if candidate is None:
         return False, None
-    ok = _ingest_candidate_for_workstream(workstream, session_id, candidate)
+    owner = _external_owner(str(candidate["source"]), str(candidate["external_session_id"]))
+    if owner and owner.get("session_id") is not None and int(owner["session_id"]) != int(session_id):
+        return False, str(candidate["source"])
+    ok = _ingest_candidate_for_session(workstream, session_id, candidate)
     return ok, str(candidate["source"])
 
 
 def ingest_latest_from_codex(workstream: Dict[str, object], session_id: int) -> bool:
-    return _pull_source_for_workstream(workstream, session_id, "codex")
+    return _pull_source_for_session(workstream, session_id, "codex")
 
 
 def ingest_latest_from_claude(workstream: Dict[str, object], session_id: int) -> bool:
-    return _pull_source_for_workstream(workstream, session_id, "claude")
+    return _pull_source_for_session(workstream, session_id, "claude")
+
+
+def _select_resume_session(
+    workstream: Dict[str, object],
+    *,
+    preferred_source: Optional[str],
+    agent: Optional[str],
+) -> Tuple[int, str, Optional[Dict[str, object]]]:
+    workstream_id = int(workstream["id"])
+    _backfill_session_links_for_workstream(workstream_id)
+    candidate = _choose_initial_candidate(preferred_source)
+    if candidate is not None:
+        source = str(candidate["source"])
+        external_session_id = str(candidate["external_session_id"])
+        owner_session_id = _find_session_for_external(workstream_id, source, external_session_id)
+        if owner_session_id is not None:
+            return owner_session_id, f"resumed session matched to current {source} transcript", None
+        owner = _external_owner(source, external_session_id)
+        if owner and int(owner["id"]) != workstream_id:
+            detached_sid = _latest_detached_session_id(workstream_id)
+            if detached_sid is not None:
+                return detached_sid, f"resumed detached session; current {source} transcript belongs to {owner['slug']}", None
+            sid = _create_session_for_workstream(
+                workstream,
+                agent=agent,
+                title="Detached resume session",
+            )
+            return sid, f"resumed detached session; current {source} transcript belongs to {owner['slug']}", None
+        sid = _create_session_for_workstream(
+            workstream,
+            agent=agent,
+            title=f"{source.capitalize()} session",
+        )
+        return sid, f"resumed new session for current {source} transcript", candidate
+
+    sessions = _session_rows_for_workstream(workstream_id)
+    if len(sessions) == 1:
+        return int(sessions[0]["id"]), "resumed only existing session", None
+    detached_sid = _latest_detached_session_id(workstream_id)
+    if detached_sid is not None:
+        return detached_sid, "resumed detached session", None
+    sid = _create_session_for_workstream(workstream, agent=agent, title="Detached resume session")
+    return sid, "resumed new detached session", None
 
 
 def _env_truthy(name: str, default: bool) -> bool:
@@ -1023,7 +1305,7 @@ def main():
 
     if args.cmd == "new":
         ws = ensure_workstream(args.name, set_current=True)
-        sid = create_session(agent=args.agent)
+        sid = _create_session_for_workstream(ws, agent=args.agent)
         sys.stdout.write(
             _render_loaded_output(
                 ws,
@@ -1038,14 +1320,18 @@ def main():
         sys.stdout.write(list_workstreams() + "\n")
     elif args.cmd == "go":
         ws = ensure_workstream(args.name, set_current=True)
-        sid = ensure_session_for_workstream(ws)
+        sid, action_label, initial_candidate = _select_resume_session(
+            ws,
+            preferred_source=args.source,
+            agent=_normalize_source(args.source) or os.getenv("CTX_AGENT_DEFAULT"),
+        )
         if _should_auto_pull(getattr(args, "auto_pull", False), getattr(args, "no_auto_pull", False)):
-            auto_pull(ws, sid, preferred_source=args.source)
+            auto_pull(ws, sid, preferred_source=args.source, initial_candidate=initial_candidate)
         sys.stdout.write(
             _render_loaded_output(
                 ws,
                 session_id=sid,
-                action_label="resumed existing session",
+                action_label=action_label,
                 focus=args.focus,
                 fmt=args.format,
                 brief=args.brief,
@@ -1059,9 +1345,13 @@ def main():
         if not ws:
             print("No current workstream set; run 'ctx set <name>' or use start/resume first.", file=sys.stderr)
             return 2
-        sid = ensure_session_for_workstream(ws, agent=_normalize_source(args.source) or os.getenv("CTX_AGENT_DEFAULT"))
+        sid, _action_label, initial_candidate = _select_resume_session(
+            ws,
+            preferred_source=args.source,
+            agent=_normalize_source(args.source) or os.getenv("CTX_AGENT_DEFAULT"),
+        )
         if args.auto or (not args.codex and not args.claude):
-            ok, who = auto_pull(ws, sid, preferred_source=args.source)
+            ok, who = auto_pull(ws, sid, preferred_source=args.source, initial_candidate=initial_candidate)
             sys.stdout.write((who or "none") + ("\n" if ok else "\n"))
         else:
             if args.codex:
@@ -1071,7 +1361,7 @@ def main():
     elif args.cmd == "start":
         # Ensure workstream and create a fresh session
         ws = ensure_workstream(args.name, set_current=True)
-        sid = create_session(agent=args.agent)
+        sid = _create_session_for_workstream(ws, agent=args.agent)
         if args.pull:
             args.copy_frontmost = True
             args.from_clipboard = True
@@ -1127,10 +1417,14 @@ def main():
         )
     elif args.cmd == "resume":
         ws = ensure_workstream(args.name, set_current=True)
-        sid = ensure_session_for_workstream(ws, agent=_normalize_source(args.source) or os.getenv("CTX_AGENT_DEFAULT"))
+        sid, action_label, initial_candidate = _select_resume_session(
+            ws,
+            preferred_source=args.source,
+            agent=_normalize_source(args.source) or os.getenv("CTX_AGENT_DEFAULT"),
+        )
         # Optionally pull before emitting
         if _should_auto_pull(getattr(args, "auto_pull", False), getattr(args, "no_auto_pull", False)):
-            auto_pull(ws, sid, preferred_source=args.source)
+            auto_pull(ws, sid, preferred_source=args.source, initial_candidate=initial_candidate)
         else:
             if args.pull_codex:
                 ingest_latest_from_codex(ws, sid)
@@ -1140,7 +1434,7 @@ def main():
             _render_loaded_output(
                 ws,
                 session_id=sid,
-                action_label="resumed existing session",
+                action_label=action_label,
                 focus=args.focus,
                 fmt=args.format,
                 brief=args.brief,
@@ -1160,10 +1454,11 @@ def main():
             return 1
         seed = workstream_pack(source_ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief)
         target_ws = ensure_workstream(args.target_name, set_current=True)
-        sid = create_session(agent=args.agent, title=f"Branch from {source_ws['slug']}")
+        sid = _create_session_for_workstream(target_ws, agent=args.agent, title=f"Branch from {source_ws['slug']}")
         branch_note = (
             f"Branched from workstream [{source_ws['slug']}] into [{target_ws['slug']}].\n\n"
-            f"The snapshot below is the starting context for this branch. Future work in this branch should diverge independently.\n\n"
+            f"The snapshot below is the starting context for this branch. "
+            f"This branch starts detached: it does not inherit the source workstream's live Claude/Codex transcript bindings.\n\n"
             f"{seed}"
         )
         run_ctx([

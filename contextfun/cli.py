@@ -71,9 +71,31 @@ SCHEMA = [
         UNIQUE(source, external_session_id)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS session_source_link (
+        id INTEGER PRIMARY KEY,
+        session_id INTEGER NOT NULL,
+        workstream_id INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        external_session_id TEXT NOT NULL,
+        transcript_path TEXT,
+        transcript_mtime REAL,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        metadata TEXT,
+        FOREIGN KEY(session_id) REFERENCES session(id) ON DELETE CASCADE,
+        FOREIGN KEY(workstream_id) REFERENCES workstream(id) ON DELETE CASCADE,
+        UNIQUE(session_id, source),
+        UNIQUE(source, external_session_id)
+    );
+    """,
     "CREATE INDEX IF NOT EXISTS idx_entry_session ON entry(session_id);",
     "CREATE INDEX IF NOT EXISTS idx_workstream_source_link_ws ON workstream_source_link(workstream_id);",
     "CREATE INDEX IF NOT EXISTS idx_workstream_source_link_source ON workstream_source_link(source, external_session_id);",
+    "CREATE INDEX IF NOT EXISTS idx_session_source_link_session ON session_source_link(session_id);",
+    "CREATE INDEX IF NOT EXISTS idx_session_source_link_workstream ON session_source_link(workstream_id);",
+    "CREATE INDEX IF NOT EXISTS idx_session_source_link_source ON session_source_link(source, external_session_id);",
 ]
 
 
@@ -87,10 +109,31 @@ def ensure_home(home: Path) -> None:
     # current.json is created on demand
 
 
+def _home_dir() -> Path:
+    env_db = os.getenv("CONTEXTFUN_DB")
+    if env_db:
+        return Path(os.path.expanduser(env_db)).resolve().parent
+    return DEFAULT_HOME
+
+
+def _attach_dir() -> Path:
+    return _home_dir() / "attachments"
+
+
+def _current_file() -> Path:
+    slot = os.getenv("CTX_AGENT_SLOT") or os.getenv("CTX_AGENT_KEY")
+    if slot:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", str(slot)).strip("-")
+        if safe:
+            return _home_dir() / f"current.{safe}.json"
+    return _home_dir() / CURRENT_FILE.name
+
+
 def _get_current_workstream():
-    if CURRENT_FILE.exists():
+    cur_file = _current_file()
+    if cur_file.exists():
         try:
-            return json.loads(CURRENT_FILE.read_text(encoding="utf-8"))
+            return json.loads(cur_file.read_text(encoding="utf-8"))
         except Exception:
             return None
     return None
@@ -104,8 +147,9 @@ def _set_current_workstream(conn: sqlite3.Connection, *, slug=None, wid=None):
     if not row:
         raise SystemExit("Workstream not found")
     data = {"id": int(row["id"]), "slug": row["slug"], "title": row["title"]}
-    CURRENT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CURRENT_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    cur_file = _current_file()
+    cur_file.parent.mkdir(parents=True, exist_ok=True)
+    cur_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return data
 
 
@@ -163,6 +207,81 @@ def _migrate(conn: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_workstream_source_link_source ON workstream_source_link(source, external_session_id);
             """
         )
+    if not _table_exists(conn, "session_source_link"):
+        conn.executescript(
+            """
+            CREATE TABLE session_source_link (
+                id INTEGER PRIMARY KEY,
+                session_id INTEGER NOT NULL,
+                workstream_id INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                external_session_id TEXT NOT NULL,
+                transcript_path TEXT,
+                transcript_mtime REAL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                metadata TEXT,
+                FOREIGN KEY(session_id) REFERENCES session(id) ON DELETE CASCADE,
+                FOREIGN KEY(workstream_id) REFERENCES workstream(id) ON DELETE CASCADE,
+                UNIQUE(session_id, source),
+                UNIQUE(source, external_session_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_source_link_session ON session_source_link(session_id);
+            CREATE INDEX IF NOT EXISTS idx_session_source_link_workstream ON session_source_link(workstream_id);
+            CREATE INDEX IF NOT EXISTS idx_session_source_link_source ON session_source_link(source, external_session_id);
+            """
+        )
+    if _table_exists(conn, "workstream_source_link") and _table_exists(conn, "session_source_link"):
+        legacy_rows = conn.execute(
+            """
+            SELECT * FROM workstream_source_link
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        for legacy in legacy_rows:
+            existing = conn.execute(
+                """
+                SELECT 1 FROM session_source_link
+                WHERE source = ? AND external_session_id = ?
+                """,
+                (legacy["source"], legacy["external_session_id"]),
+            ).fetchone()
+            if existing:
+                continue
+            latest_session = conn.execute(
+                """
+                SELECT id FROM session
+                WHERE workstream_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (legacy["workstream_id"],),
+            ).fetchone()
+            if not latest_session:
+                continue
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO session_source_link(
+                    session_id, workstream_id, source, external_session_id,
+                    transcript_path, transcript_mtime, message_count,
+                    created_at, updated_at, metadata
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(latest_session["id"]),
+                    int(legacy["workstream_id"]),
+                    legacy["source"],
+                    legacy["external_session_id"],
+                    legacy["transcript_path"],
+                    legacy["transcript_mtime"],
+                    legacy["message_count"],
+                    legacy["created_at"],
+                    legacy["updated_at"],
+                    legacy["metadata"],
+                ),
+            )
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -182,13 +301,52 @@ def _workstream_source_links(conn: sqlite3.Connection, workstream_id: int) -> li
     ).fetchall()
 
 
-def _source_links_summary(conn: sqlite3.Connection, workstream_id: int) -> str:
-    links = _workstream_source_links(conn, workstream_id)
+def _session_source_links(conn: sqlite3.Connection, session_id: int) -> list[sqlite3.Row]:
+    if not _table_exists(conn, "session_source_link"):
+        return []
+    return conn.execute(
+        """
+        SELECT * FROM session_source_link
+        WHERE session_id = ?
+        ORDER BY source ASC
+        """,
+        (session_id,),
+    ).fetchall()
+
+
+def _session_source_links_for_workstream(conn: sqlite3.Connection, workstream_id: int) -> list[sqlite3.Row]:
+    if not _table_exists(conn, "session_source_link"):
+        return []
+    return conn.execute(
+        """
+        SELECT * FROM session_source_link
+        WHERE workstream_id = ?
+        ORDER BY source ASC, session_id DESC
+        """,
+        (workstream_id,),
+    ).fetchall()
+
+
+def _session_source_links_summary(conn: sqlite3.Connection, session_id: int) -> str:
+    links = _session_source_links(conn, session_id)
     if not links:
         return ""
     parts = []
     for link in links:
         parts.append(f"{link['source']}:{link['external_session_id']}")
+    return ", ".join(parts)
+
+
+def _source_links_summary(conn: sqlite3.Connection, workstream_id: int) -> str:
+    links = _session_source_links_for_workstream(conn, workstream_id)
+    if not links:
+        links = _workstream_source_links(conn, workstream_id)
+    if not links:
+        return ""
+    parts = []
+    for link in links:
+        session_suffix = f"->S{link['session_id']}" if "session_id" in link.keys() else ""
+        parts.append(f"{link['source']}:{link['external_session_id']}{session_suffix}")
     return ", ".join(parts)
 
 
@@ -320,10 +478,9 @@ def cmd_session_show(args: argparse.Namespace):
                     print(f"  Summary: {meta['summary']}")
             except Exception:
                 pass
-        if s["workstream_id"]:
-            linked = _source_links_summary(conn, int(s["workstream_id"]))
-            if linked:
-                print(f"  External links: {linked}")
+        linked = _session_source_links_summary(conn, int(s["id"]))
+        if linked:
+            print(f"  External links: {linked}")
         print("-- Entries --")
         rows = conn.execute(
             "SELECT * FROM entry WHERE session_id = ? ORDER BY id DESC",
@@ -346,7 +503,7 @@ def cmd_session_show(args: argparse.Namespace):
 
 def _attachment_roots_for_session(db_path: Path, session_id: int) -> list[Path]:
     roots = [db_path.parent / "attachments" / str(session_id)]
-    legacy_root = ATTACH_DIR / str(session_id)
+    legacy_root = _attach_dir() / str(session_id)
     if legacy_root not in roots:
         roots.append(legacy_root)
     return roots
@@ -709,7 +866,7 @@ def _read_stdin_if_dash(text_arg):
 
 def _copy_attachment(session_id: int, entry_id: int, src_path: Path) -> str:
     # Store attachment under ~/.contextfun/attachments/<sid>/<eid>/<filename>
-    dst_dir = ATTACH_DIR / str(session_id) / str(entry_id)
+    dst_dir = _attach_dir() / str(session_id) / str(entry_id)
     dst_dir.mkdir(parents=True, exist_ok=True)
     dst = dst_dir / src_path.name
     shutil.copy2(src_path, dst)

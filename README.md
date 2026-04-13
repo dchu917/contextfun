@@ -22,9 +22,9 @@ Claude Code chat          Codex chat
 
 ## Why `ctx`
 
-- Exact transcript binding: a workstream can bind to the exact Claude and/or Codex conversation it started from.
+- Exact transcript binding: each internal ctx session can bind to the exact Claude and/or Codex conversation it came from.
 - No transcript drift: later pulls stay on that bound conversation instead of jumping to the newest chat on disk.
-- Branching: start a new workstream from the current state of another one without sharing future transcript pulls.
+- Safe branching: start a new workstream from the current state of another one without sharing future transcript pulls or hijacking the source conversation.
 - Local-first: no API keys, no hosted service, plain SQLite plus local files.
 
 ## 3-Step Demo
@@ -126,21 +126,22 @@ Codex note:
 - `session`: an internal ctx session inside that workstream
 - `entry`: imported or manually added notes/messages/files/decisions
 
-Transcript linkage is tracked at the workstream level.
+Transcript linkage is tracked at the ctx-session level, inside a workstream.
 
-When a workstream pulls from Claude or Codex for the first time, `ctx` records:
+When `ctx` pulls from Claude or Codex, it records on the internal ctx session:
 
 - source: `claude` or `codex`
 - exact external session id from the transcript file
 - transcript path
 - how many messages have already been imported
 
-Later `start`, `resume`, and `pull` calls for that workstream reuse that exact external conversation and only ingest new messages.
+Later `resume` and `pull` calls try to match the current external conversation back to the correct ctx session inside the workstream. If there is no match yet, `ctx` creates a new ctx session for that external conversation instead of silently reusing the latest session from the whole workstream.
 
 This means:
 
-- a new Claude/Codex conversation on disk will not silently replace the bound one
-- a workstream can be linked to one Claude conversation and one Codex conversation at the same time
+- a new Claude/Codex conversation on disk will not silently replace an older bound one
+- the same workstream can safely contain multiple Claude/Codex conversations as separate ctx sessions
+- one external Claude/Codex conversation is owned by at most one ctx session, so branches and sibling workstreams do not share the same live transcript
 - branching creates a new workstream without inheriting the source workstream's external links
 
 ## Load Output And Compression
@@ -200,7 +201,8 @@ Claude shortcuts:
 Branching behavior:
 
 - the target gets a snapshot pack of the source as its starting point
-- the target does not inherit the source's future transcript pulls
+- the target starts detached and does not inherit the source's future transcript pulls
+- if the current Claude/Codex conversation is already owned by the source workstream, resuming the branch stays detached instead of reusing that transcript
 - future work in the target is independent
 
 ## Less Intimidating Install Options
@@ -236,6 +238,14 @@ Project-local bootstrap:
 ```bash
 source <(curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/agent_setup_local_ctx.sh)
 ```
+
+Optional per-agent isolation:
+
+```bash
+export CTX_AGENT_SLOT=claude-a
+```
+
+If you set `CTX_AGENT_SLOT` (or `CTX_AGENT_KEY`), `ctx` keeps that agent's `current` workstream state in a separate `current.<slot>.json` file next to the active DB. This avoids two agents in the same repo stomping on each other's current workstream pointer.
 
 ## Security Model
 
