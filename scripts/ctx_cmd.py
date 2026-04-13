@@ -769,6 +769,28 @@ def _render_loaded_output(
     if session:
         session_label = f"S{session['id']} {session['title']} (@{session['agent'] or 'n/a'}) — {session['created_at']}"
 
+    continuation_lines_md: List[str] = []
+    continuation_lines_text: List[str] = []
+    guidance_lines_md: List[str] = []
+    guidance_lines_text: List[str] = []
+    if action_label.startswith("resumed"):
+        continuation_lines_md = [
+            f"- Continuation: new context from this conversation will now be appended to `{workstream['slug']}`.",
+            f"- Branching: if you want to explore without changing `{workstream['slug']}`, create a branch first with `ctx branch {workstream['slug']} <new-name>`.",
+        ]
+        continuation_lines_text = [
+            f"Continuation: new context from this conversation will now be appended to {workstream['slug']}.",
+            f"Branching: if you want to explore without changing {workstream['slug']}, create a branch first with: ctx branch {workstream['slug']} <new-name>",
+        ]
+        guidance_lines_md = [
+            "- Assistant: make it explicit that new context from this conversation will now be appended to this workstream.",
+            "- Assistant: if the user wants a separate path that does not change this workstream, tell them to create a branch first.",
+        ]
+        guidance_lines_text = [
+            "- Assistant: make it explicit that new context from this conversation will now be appended to this workstream.",
+            "- Assistant: if the user wants a separate path that does not change this workstream, tell them to create a branch first.",
+        ]
+
     if fmt == "markdown":
         lines = [
             f"## ctx loaded: `{workstream['slug']}`",
@@ -780,6 +802,7 @@ def _render_loaded_output(
             f"- Linked transcripts: {links}",
             f"- Load controls: {pinned_count} pinned | {excluded_count} excluded",
             f"- Pack mode: {pack_mode}",
+            *continuation_lines_md,
             "- Tip: In Codex, use `ctrl-t` to inspect the full command output. In Claude, expand the tool output block in the UI.",
             "",
             "### Last things",
@@ -790,6 +813,7 @@ def _render_loaded_output(
             "- In Codex, press `ctrl-t` to inspect the full command output if the full pack is collapsed.",
             "- In Claude, expand the tool output block to inspect the full pack.",
             "- Assistant: summarize this workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.",
+            *guidance_lines_md,
             "- Assistant: do not paste the full ctx pack back unless the user explicitly asks for it.",
             "",
             "---",
@@ -811,6 +835,7 @@ def _render_loaded_output(
         f"Linked transcripts: {links}",
         f"Load controls: {pinned_count} pinned | {excluded_count} excluded",
         f"Pack mode: {pack_mode}",
+        *continuation_lines_text,
         "Tip: In Codex, use ctrl-t to inspect the full command output. In Claude, expand the tool output block in the UI.",
         "",
         "Last things:",
@@ -820,6 +845,7 @@ def _render_loaded_output(
         "- In Codex, press ctrl-t to inspect the full command output if the full pack is collapsed.",
         "- In Claude, expand the tool output block to inspect the full pack.",
         "- Assistant: summarize this workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.",
+        *guidance_lines_text,
         "- Assistant: do not paste the full ctx pack back unless the user explicitly asks for it.",
         "",
         "<ctx-pack>",

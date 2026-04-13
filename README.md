@@ -256,6 +256,8 @@ Command semantics:
 - `ctx start <name>` creates a new workstream and starts its first ctx session
 - if `<name>` already exists, ctx automatically creates a suffixed new workstream such as `name (1)`
 - `ctx resume <name>` continues an existing workstream and chooses the right ctx session inside it
+- after `ctx resume <name>`, new context from the current conversation is appended to that workstream
+- if you want to explore without changing that workstream, branch first with `ctx branch <source> <target>`
 - `ctx rename <new-name>` renames the current workstream
 - `ctx rename <new-name> --from <old-name>` renames a specific workstream
 
