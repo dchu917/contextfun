@@ -72,10 +72,10 @@ EOF
 - Browser frontend:
   - `ctx web --open`
 - Claude Code:
-  - Restart Claude Code, then use `/ctx`, `/ctx list`, `/ctx start my-stream --pull`, `/ctx resume my-stream`, `/ctx delete my-stream`, `/ctx branch source-stream target-stream`
+  - Restart Claude Code, then use `/ctx`, `/ctx list`, `/ctx start my-stream --pull`, `/ctx resume my-stream`, `/ctx rename better-name`, `/ctx delete my-stream`, `/ctx branch source-stream target-stream`
   - Shortcut: `/branch source-stream target-stream`
 - Codex:
-  - Restart Codex, then use `ctx`, `ctx list`, `ctx start my-stream --pull`, `ctx resume my-stream`, `ctx delete my-stream`, `ctx branch source-stream target-stream`
+  - Restart Codex, then use `ctx`, `ctx list`, `ctx start my-stream --pull`, `ctx resume my-stream`, `ctx rename better-name`, `ctx delete my-stream`, `ctx branch source-stream target-stream`
   - Compatibility aliases: `ctx-list`, `ctx-search`, `ctx-start`, `ctx-resume`, `ctx-delete`, `ctx-branch`, `ctx-web`
   - Codex does not currently support custom repo-defined slash commands like `/ctx-list`.
 - Optional automation helpers for paste/status workflows:

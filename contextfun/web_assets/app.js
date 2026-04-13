@@ -152,11 +152,18 @@ function renderDetailPage(detail, listItem) {
       </div>
 
       <div class="command-grid">
-        ${commandBlock("Resume In Claude Code", `/ctx resume ${ws.slug}`)}
-        ${commandBlock("Resume In Codex", `ctx resume ${ws.slug}`)}
-        ${commandBlock("Start Fresh Session In Claude Code", `/ctx start ${ws.slug} --pull`)}
-        ${commandBlock("Start Fresh Session In Codex", `ctx start ${ws.slug} --pull`)}
+        ${commandBlock("Continue In Claude Code", `/ctx resume ${ws.slug}`)}
+        ${commandBlock("Continue In Codex", `ctx resume ${ws.slug}`)}
       </div>
+
+      <section class="detail-section">
+        <p class="label">Rename Workstream</p>
+        <div class="rename-row">
+          <input id="rename-input" type="text" value="${escapeHtml(ws.title)}" />
+          <button id="rename-button" class="rename-button" type="button">Rename</button>
+        </div>
+        <p class="panel-note">If you later start another workstream with this same name, ctx will save it as <code>${escapeHtml(ws.title)} (1)</code>.</p>
+      </section>
 
       <section class="detail-section">
         <p class="label">Recent Context</p>
@@ -174,6 +181,23 @@ function renderDetailPage(detail, listItem) {
   document.getElementById("back-link").addEventListener("click", (event) => {
     event.preventDefault();
     window.history.pushState({}, "", "/");
+    boot().catch(showError);
+  });
+
+  document.getElementById("rename-button").addEventListener("click", async () => {
+    const newName = document.getElementById("rename-input").value.trim();
+    if (!newName) {
+      return;
+    }
+    const result = await api("/api/actions/rename", {
+      method: "POST",
+      body: JSON.stringify({ ref: ws.slug, new_name: newName }),
+    });
+    const nextSlug =
+      result?.detail?.workstream?.slug ||
+      result?.current?.slug ||
+      slugifyForPath(newName);
+    window.history.pushState({}, "", `/workstreams/${encodeURIComponent(nextSlug)}`);
     boot().catch(showError);
   });
 }
@@ -206,6 +230,15 @@ function bindEvents() {
   window.addEventListener("popstate", () => {
     boot().catch(showError);
   });
+}
+
+function slugifyForPath(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "ws";
 }
 
 bindEvents();

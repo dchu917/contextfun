@@ -55,14 +55,21 @@ def run_ctx_passthrough(args_list):
     return subprocess.call(cmd, cwd=str(ROOT), env=env)
 
 
-def ensure_workstream(name, set_current=False):
+def ensure_workstream(name, set_current=False, unique_if_exists=False):
     args = ["workstream-ensure", name]
     if set_current:
         args.append("--set-current")
+    if unique_if_exists:
+        args.append("--unique-if-exists")
     args.append("--json")
     out = run_ctx(args)
     import json
 
+    return json.loads(out)
+
+
+def rename_workstream(ref: str, new_name: str):
+    out = run_ctx(["workstream-rename", ref, new_name, "--json"])
     return json.loads(out)
 
 
@@ -178,6 +185,22 @@ def lookup_workstream(name: str) -> Optional[Dict[str, object]]:
     if not row:
         return None
     return {"id": int(row["id"]), "slug": row["slug"], "title": row["title"]}
+
+
+def require_workstream(name: str, *, set_current: bool = False) -> Dict[str, object]:
+    ws = lookup_workstream(name)
+    if not ws:
+        print(
+            f"Workstream '{name}' not found. Use 'ctx start {name}' to create a new one.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if set_current:
+        run_ctx(["workstream-set-current", "--slug", str(ws["slug"])])
+        cur = current_workstream()
+        if cur:
+            ws = cur
+    return ws
 
 
 def current_workstream() -> Optional[Dict[str, object]]:
@@ -1229,7 +1252,7 @@ def main():
     p_search.add_argument("query", nargs="+")
     p_search.add_argument("--limit", type=int, default=8)
 
-    p_go = sub.add_parser("go", help="/ctx <name>")
+    p_go = sub.add_parser("go", help="Resume an existing workstream")
     p_go.add_argument("name")
     p_go.add_argument("--focus")
     p_go.add_argument("--format", default="markdown", choices=["text", "markdown"])
@@ -1258,7 +1281,7 @@ def main():
     p_start.add_argument("--auto-pull", action="store_true", help="Import the newest transcript between Codex and Claude (default on; see CTX_AUTOPULL_DEFAULT)")
     p_start.add_argument("--no-auto-pull", action="store_true", help="Disable auto-pull for this invocation")
 
-    p_resume2 = sub.add_parser("resume", help="Ensure workstream and emit pack (alias of 'go')")
+    p_resume2 = sub.add_parser("resume", help="Resume an existing workstream")
     p_resume2.add_argument("name", help="Workstream name or slug")
     p_resume2.add_argument("--focus")
     p_resume2.add_argument("--format", default="markdown", choices=["text", "markdown"])
@@ -1297,6 +1320,10 @@ def main():
     p_set = sub.add_parser("set", help="Set current workstream by slug or name (ensures if missing)")
     p_set.add_argument("name")
 
+    p_rename = sub.add_parser("rename", help="Rename the current or a specific workstream")
+    p_rename.add_argument("new_name", help="New workstream name")
+    p_rename.add_argument("--from", dest="ref", help="Existing workstream slug or title (defaults to current)")
+
     # Frictionless capture helpers
     p_note = sub.add_parser("note", help="Capture a note (arg or stdin)")
     p_note.add_argument("text", nargs="?", help="Note text; if omitted, read stdin")
@@ -1330,13 +1357,16 @@ def main():
     args = p.parse_args()
 
     if args.cmd == "new":
-        ws = ensure_workstream(args.name, set_current=True)
+        ws = ensure_workstream(args.name, set_current=True, unique_if_exists=True)
         sid = _create_session_for_workstream(ws, agent=args.agent)
+        action_label = "started new workstream and first session"
+        if ws.get("renamed"):
+            action_label = f"started new workstream with auto-renamed name (requested '{args.name}')"
         sys.stdout.write(
             _render_loaded_output(
                 ws,
                 session_id=sid,
-                action_label="started new session",
+                action_label=action_label,
                 focus=args.focus,
                 fmt=args.format,
                 brief=args.brief,
@@ -1347,7 +1377,7 @@ def main():
     elif args.cmd == "search":
         sys.stdout.write(search_context(" ".join(args.query), limit=args.limit) + "\n")
     elif args.cmd == "go":
-        ws = ensure_workstream(args.name, set_current=True)
+        ws = require_workstream(args.name, set_current=True)
         sid, action_label, initial_candidate = _select_resume_session(
             ws,
             preferred_source=args.source,
@@ -1368,6 +1398,20 @@ def main():
     elif args.cmd == "set":
         ws = ensure_workstream(args.name, set_current=True)
         sys.stdout.write(f"Current workstream: {ws['slug']} (id {ws['id']})\n")
+    elif args.cmd == "rename":
+        ref = args.ref
+        if not ref:
+            ws = current_workstream()
+            if not ws:
+                print("No current workstream set; provide --from or use start/resume first.", file=sys.stderr)
+                return 2
+            ref = str(ws["slug"])
+        result = rename_workstream(ref, args.new_name)
+        sys.stdout.write(
+            f"Renamed workstream {result['old_slug']} -> {result['slug']}"
+            + (f" (requested '{args.new_name}')" if result.get("renamed") else "")
+            + "\n"
+        )
     elif args.cmd == "pull":
         ws = current_workstream()
         if not ws:
@@ -1392,8 +1436,9 @@ def main():
             web_args.append("--open")
         return run_ctx_passthrough(web_args)
     elif args.cmd == "start":
-        # Ensure workstream and create a fresh session
-        ws = ensure_workstream(args.name, set_current=True)
+        # Start a new workstream and create its first session. If the name
+        # already exists, ctx creates a suffixed variant like "name (1)".
+        ws = ensure_workstream(args.name, set_current=True, unique_if_exists=True)
         sid = _create_session_for_workstream(ws, agent=args.agent)
         if args.pull:
             args.copy_frontmost = True
@@ -1438,18 +1483,21 @@ def main():
             except Exception:
                 # Ignore clipboard failures silently to keep UX smooth
                 pass
+        action_label = "started new workstream and first session"
+        if ws.get("renamed"):
+            action_label = f"started new workstream with auto-renamed name (requested '{args.name}')"
         sys.stdout.write(
             _render_loaded_output(
                 ws,
                 session_id=sid,
-                action_label="started new session",
+                action_label=action_label,
                 focus=args.focus,
                 fmt=args.format,
                 brief=args.brief,
             )
         )
     elif args.cmd == "resume":
-        ws = ensure_workstream(args.name, set_current=True)
+        ws = require_workstream(args.name, set_current=True)
         sid, action_label, initial_candidate = _select_resume_session(
             ws,
             preferred_source=args.source,

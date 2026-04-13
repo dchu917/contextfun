@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ContextFun one-line installer
+# ctx one-line installer
 # Installs to ~/.contextfun and sets PATH + CONTEXTFUN_DB
 
 REPO_URL="https://github.com/dchu917/ctx"
@@ -12,7 +12,7 @@ BIN_DIR="$PREFIX/bin"
 LIB_DIR="$PREFIX/lib"
 DB_PATH="$PREFIX/context.db"
 
-echo "Installing ContextFun to $PREFIX"
+echo "Installing ctx to $PREFIX"
 mkdir -p "$BIN_DIR" "$LIB_DIR"
 
 TMPDIR=$(mktemp -d)
@@ -89,6 +89,7 @@ Try:
   ctx start my-workstream
   ctx start my-workstream --pull
   ctx resume my-workstream
+  ctx rename better-name --from my-workstream
   ctx delete my-workstream
   ctx branch from-workstream to-workstream
   ctx web --open

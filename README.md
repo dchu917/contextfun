@@ -44,7 +44,7 @@ cd ctx
 ctx web --open
 ```
 
-3. Start a workstream:
+3. Start a new workstream:
 
 Claude Code:
 
@@ -58,14 +58,14 @@ Codex or your terminal:
 ctx start feature-audit --pull
 ```
 
-From the browser UI, you can also:
+From the browser UI, you can:
 
-- browse the current workstream
+- browse saved workstreams
 - search indexed context
-- resume or branch without leaving the page
-- inspect the full loaded ctx block in an expandable panel
+- click into a workstream detail page
+- copy the exact Claude or Codex command to continue it
 
-4. Come back later and resume or branch:
+4. Come back later and continue or branch:
 
 Claude Code:
 
@@ -117,12 +117,15 @@ What the frontend gives you:
 - a clean searchable list of workstreams
 - date and source type for each workstream (`codex`, `claude`, or `both`)
 - a plain-language summary of what each workstream was doing
-- the exact Claude and Codex commands to continue or start a fresh session in that workstream
+- a dedicated page for each workstream at `/workstreams/<slug>`
+- the exact Claude and Codex commands to continue that workstream
+- a simple rename control in the detail view
 
 Frontend note:
 
-- the browser is meant to help you find the right workstream and continue it from Claude or Codex
-- use the shown commands in your agent client after you find the stream you want
+- the browser is mainly for finding the right workstream and remembering what it was doing
+- use `resume`, not `start`, for an existing workstream
+- if you call `start` with a name that already exists, ctx automatically creates `name (1)`, `name (2)`, and so on
 
 ## Daily Use
 
@@ -133,6 +136,8 @@ Claude Code:
 - `/ctx search dataset download`
 - `/ctx start my-stream --pull`
 - `/ctx resume my-stream`
+- `/ctx rename better-name`
+- `/ctx rename better-name --from old-name`
 - `/ctx delete my-stream`
 - `/ctx branch source-stream target-stream`
 - `/branch source-stream target-stream`
@@ -146,6 +151,8 @@ Codex:
 - `ctx start my-stream`
 - `ctx start my-stream --pull`
 - `ctx resume my-stream`
+- `ctx rename better-name`
+- `ctx rename better-name --from old-name`
 - `ctx delete my-stream`
 - `ctx branch source-stream target-stream`
 
@@ -194,6 +201,14 @@ Search indexing:
 - `ctx search <query>` returns the best matching workstreams first, then the top matching snippets
 - compatibility alias: `ctx-search <query>`
 
+Command semantics:
+
+- `ctx start <name>` creates a new workstream and starts its first ctx session
+- if `<name>` already exists, ctx automatically creates a suffixed new workstream such as `name (1)`
+- `ctx resume <name>` continues an existing workstream and chooses the right ctx session inside it
+- `ctx rename <new-name>` renames the current workstream
+- `ctx rename <new-name> --from <old-name>` renames a specific workstream
+
 ## Load Output And Compression
 
 When `ctx` loads context for a workstream, it prints two layers:
@@ -229,17 +244,12 @@ export CTX_LOAD_CHAR_BUDGET=12000
 
 `ctx start my-stream --pull` or `/ctx start my-stream --pull` means:
 
-1. create a new internal ctx session
-2. copy the visible frontmost chat via Cmd+A / Cmd+C on macOS
-3. ingest that clipboard text into the new ctx session
+1. create a new workstream and its first ctx session
+2. if `my-stream` already exists, create `my-stream (1)` instead
+3. copy the visible frontmost chat via Cmd+A / Cmd+C on macOS
+4. ingest that clipboard text into the new ctx session
 
 It does not change the stable Claude/Codex transcript binding by itself.
-
-If you are using the browser frontend, the recommended equivalent is:
-
-1. click Start Session
-2. paste the visible chat or task brief into the seeded-context textarea
-3. let `ctx` save that text into the new session directly
 
 ## Branching
 
@@ -339,6 +349,8 @@ ctx list
 ctx search dataset download
 ctx start my-stream --pull
 ctx resume my-stream
+ctx rename better-name
+ctx rename better-name --from old-name
 ctx delete my-stream
 ctx delete --session-id 123
 ctx branch old-stream new-stream

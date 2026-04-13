@@ -24,6 +24,7 @@ Supported chat-style commands in this repo:
   - Treat `--pull` strictly as a flag, never as part of the workstream name.
   - Run `ctx start [--pull] <workstream>`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py start [--pull] <workstream> --format markdown`.
+  - `start` means create a new workstream. If that name already exists, ctx automatically creates `<workstream> (1)`, `<workstream> (2)`, and so on.
   - Do not paste the full ctx pack back unless the user asks for it.
   - Summarize the loaded workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.
   - Make it explicit that in Codex the user can inspect the full command output with `ctrl-t`, and in Claude they can expand the tool output block.
@@ -31,9 +32,15 @@ Supported chat-style commands in this repo:
 - `ctx resume <workstream>`
   - Run `ctx resume <workstream>`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py resume <workstream> --format markdown`.
+  - `resume` means continue an existing workstream. If the workstream does not exist, tell the user to use `ctx start <workstream>` instead.
   - Do not paste the full ctx pack back unless the user asks for it.
   - Summarize the loaded workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.
   - Make it explicit that in Codex the user can inspect the full command output with `ctrl-t`, and in Claude they can expand the tool output block.
+
+- `ctx rename <new-name>` or `ctx rename <new-name> --from <existing-workstream>`
+  - Run `ctx rename ...`.
+  - If that is unavailable, run `python3 scripts/ctx_cmd.py rename ...`.
+  - If the requested new name already exists, ctx auto-suffixes the rename result the same way as `start`.
 
 - `ctx delete <workstream>` or `ctx delete --session-id <id>`
   - Run `ctx delete ...`.

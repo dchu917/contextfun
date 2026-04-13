@@ -597,6 +597,19 @@ def _resolve_workstream_id(conn: sqlite3.Connection, *, slug=None, wid=None) -> 
     sys.exit(2)
 
 
+def _workstream_row_by_ref(conn: sqlite3.Connection, ref: str):
+    return conn.execute(
+        """
+        SELECT *
+        FROM workstream
+        WHERE slug = ? OR title = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (ref, ref),
+    ).fetchone()
+
+
 def _slugify(name: str) -> str:
     s = name.strip().lower()
     s = re.sub(r"[^a-z0-9]+", "-", s)
@@ -604,14 +617,63 @@ def _slugify(name: str) -> str:
     return s.strip("-") or "ws"
 
 
+def _workstream_name_conflict(
+    conn: sqlite3.Connection,
+    *,
+    title: str,
+    slug: str,
+    exclude_id: int | None = None,
+):
+    if exclude_id is None:
+        return conn.execute(
+            "SELECT id FROM workstream WHERE slug = ? OR title = ? LIMIT 1",
+            (slug, title),
+        ).fetchone()
+    return conn.execute(
+        "SELECT id FROM workstream WHERE (slug = ? OR title = ?) AND id != ? LIMIT 1",
+        (slug, title, exclude_id),
+    ).fetchone()
+
+
+def _unique_workstream_identity(
+    conn: sqlite3.Connection,
+    *,
+    requested_name: str,
+    requested_slug: str | None = None,
+    exclude_id: int | None = None,
+):
+    base_name = requested_name.strip() or "Workstream"
+    base_slug = requested_slug or _slugify(base_name)
+    title = base_name
+    slug = base_slug
+    renamed = False
+    index = 0
+    while _workstream_name_conflict(conn, title=title, slug=slug, exclude_id=exclude_id):
+        index += 1
+        renamed = True
+        title = f"{base_name} ({index})"
+        slug = f"{base_slug}-{index}"
+    return title, slug, renamed
+
+
 def cmd_workstream_ensure(args: argparse.Namespace):
     db = Path(args.db)
     init_db(db, quiet=True)
-    name = args.name
-    slug = args.slug or _slugify(name)
+    requested_name = args.name
+    slug = args.slug or _slugify(requested_name)
     created = False
+    renamed = False
     with connect(db) as conn:
-        row = conn.execute("SELECT * FROM workstream WHERE slug = ?", (slug,)).fetchone()
+        row = None
+        name = requested_name
+        if getattr(args, "unique_if_exists", False):
+            name, slug, renamed = _unique_workstream_identity(
+                conn,
+                requested_name=requested_name,
+                requested_slug=slug,
+            )
+        else:
+            row = conn.execute("SELECT * FROM workstream WHERE slug = ?", (slug,)).fetchone()
         if not row:
             cur = conn.cursor()
             cur.execute(
@@ -637,12 +699,58 @@ def cmd_workstream_ensure(args: argparse.Namespace):
             _set_current_workstream(conn, slug=row["slug"], wid=None)
         _index_workstream(conn, int(row["id"]))
         conn.commit()
-    result = {"id": int(row["id"]), "slug": row["slug"], "title": row["title"], "created": created}
+    result = {
+        "id": int(row["id"]),
+        "slug": row["slug"],
+        "title": row["title"],
+        "created": created,
+        "renamed": renamed,
+        "requested_name": requested_name,
+    }
     if args.json:
         print(json.dumps(result))
     else:
         status = "created" if created else "existing"
-        print(f"{result['slug']} (id {result['id']}) - {status}")
+        suffix = f" (requested '{requested_name}')" if renamed else ""
+        print(f"{result['slug']} (id {result['id']}) - {status}{suffix}")
+
+
+def cmd_workstream_rename(args: argparse.Namespace):
+    db = Path(args.db)
+    init_db(db, quiet=True)
+    with connect(db) as conn:
+        row = _workstream_row_by_ref(conn, args.ref)
+        if not row:
+            print(f"Workstream '{args.ref}' not found", file=sys.stderr)
+            sys.exit(1)
+        new_title, new_slug, renamed = _unique_workstream_identity(
+            conn,
+            requested_name=args.new_name,
+            exclude_id=int(row["id"]),
+        )
+        conn.execute(
+            "UPDATE workstream SET title = ?, slug = ? WHERE id = ?",
+            (new_title, new_slug, int(row["id"])),
+        )
+        _index_workstream(conn, int(row["id"]))
+        cur = _get_current_workstream()
+        if cur and int(cur.get("id")) == int(row["id"]):
+            _set_current_workstream(conn, wid=int(row["id"]))
+        conn.commit()
+        result = {
+            "id": int(row["id"]),
+            "old_slug": row["slug"],
+            "old_title": row["title"],
+            "slug": new_slug,
+            "title": new_title,
+            "renamed": renamed,
+            "requested_name": args.new_name,
+        }
+    if args.json:
+        print(json.dumps(result))
+    else:
+        suffix = f" (requested '{args.new_name}')" if renamed else ""
+        print(f"Renamed workstream {result['old_slug']} -> {result['slug']}{suffix}")
 
 
 def cmd_workstream_new(args: argparse.Namespace):
@@ -1738,8 +1846,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_w_ens.add_argument("--slug", help="Optional explicit slug; otherwise derived")
     p_w_ens.add_argument("--workspace", help="Optional workspace path")
     p_w_ens.add_argument("--set-current", action="store_true", help="Set as current workstream")
+    p_w_ens.add_argument("--unique-if-exists", action="store_true", help="If the requested name exists, create a suffixed new workstream instead")
     p_w_ens.add_argument("--json", action="store_true", help="Output JSON result")
     p_w_ens.set_defaults(func=cmd_workstream_ensure)
+
+    p_w_ren = sp.add_parser("workstream-rename", help="Rename a workstream by slug or title")
+    add_common_args(p_w_ren)
+    p_w_ren.add_argument("ref", help="Existing workstream slug or title")
+    p_w_ren.add_argument("new_name", help="New human-friendly name")
+    p_w_ren.add_argument("--json", action="store_true", help="Output JSON result")
+    p_w_ren.set_defaults(func=cmd_workstream_rename)
 
     # session new
     p_s_new = sp.add_parser("session-new", help="Create a new session")

@@ -476,6 +476,41 @@ class CtxWebApp:
             return {"ok": False, "code": 2, "stdout": "", "stderr": "Provide a workstream name or session id"}
         return self._run_ctx(["delete", name])
 
+    def rename(self, ref: str, new_name: str) -> dict:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "contextfun",
+                "--db",
+                str(self.db_path),
+                "workstream-rename",
+                ref,
+                new_name,
+                "--json",
+            ],
+            cwd=str(REPO_ROOT) if (REPO_ROOT / "scripts" / "ctx_cmd.py").exists() else None,
+            env=self._ctx_env(),
+            capture_output=True,
+            text=True,
+        )
+        detail_slug = None
+        stdout = proc.stdout
+        if proc.returncode == 0:
+            try:
+                parsed = json.loads(proc.stdout or "{}")
+                detail_slug = parsed.get("slug")
+                stdout = f"Renamed workstream {parsed.get('old_slug')} -> {parsed.get('slug')}"
+            except Exception:
+                pass
+        return {
+            "ok": proc.returncode == 0,
+            "code": proc.returncode,
+            "stdout": stdout,
+            "stderr": proc.stderr,
+            "detail_slug": detail_slug,
+        }
+
 
 def _read_asset(name: str, content_type: str) -> tuple[bytes, str]:
     path = ASSET_DIR / name
@@ -606,6 +641,13 @@ def build_handler(app: CtxWebApp):
                     self._send_json({"error": "source_name and target_name are required"}, status=400)
                     return
                 result = app.branch(source_name, target_name, str(data.get("agent") or "other"))
+            elif parsed.path == "/api/actions/rename":
+                ref = str(data.get("ref") or "").strip()
+                new_name = str(data.get("new_name") or "").strip()
+                if not ref or not new_name:
+                    self._send_json({"error": "ref and new_name are required"}, status=400)
+                    return
+                result = app.rename(ref, new_name)
             elif parsed.path == "/api/actions/delete":
                 session_id = data.get("session_id")
                 result = app.delete(
@@ -627,6 +669,8 @@ def build_handler(app: CtxWebApp):
             detail_slug = ""
             if payload["current"]:
                 detail_slug = str(payload["current"]["slug"])
+            elif result.get("detail_slug"):
+                detail_slug = str(result.get("detail_slug") or "").strip()
             elif data.get("target_name"):
                 detail_slug = str(data.get("target_name") or "").strip()
             elif data.get("name"):

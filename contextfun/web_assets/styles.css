@@ -282,6 +282,28 @@ input {
   gap: 10px;
 }
 
+.rename-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.rename-button {
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #ffffff;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.rename-button:hover {
+  background: #fafaf8;
+}
+
 .back-link {
   color: var(--ink);
   text-decoration: none;
@@ -295,7 +317,8 @@ input {
 @media (max-width: 860px) {
   .ws-row,
   .info-grid,
-  .command-grid {
+  .command-grid,
+  .rename-row {
     grid-template-columns: 1fr;
   }
 
