@@ -61,6 +61,14 @@ function renderListPage(items) {
     ? items
         .map((item) => {
           const latest = item.latest || "No recent task recorded yet.";
+          const repoNote =
+            item.repo_relation === "current"
+              ? `This repo`
+              : item.repo_name
+                ? `Saved in ${item.repo_name}`
+                : item.workspace
+                  ? `Saved in ${item.workspace}`
+                  : `Repo unknown`;
           return `
             <a class="ws-link" href="/workstreams/${encodeURIComponent(item.slug)}" data-nav="${escapeHtml(item.slug)}">
               <article class="ws-card">
@@ -69,6 +77,7 @@ function renderListPage(items) {
                     <div class="ws-title">${escapeHtml(item.title)}</div>
                     <div class="ws-slug">${escapeHtml(item.slug)}</div>
                     <div class="ws-copy">This workstream was focused on ${escapeHtml(item.goal || item.title)}. Most recent task: ${escapeHtml(latest)}</div>
+                    <div class="ws-copy muted">${escapeHtml(repoNote)}</div>
                   </div>
                   <div class="ws-meta">
                     <span class="pill">${escapeHtml(formatDate(item.last_activity_at))}</span>
@@ -143,6 +152,12 @@ function recentItem(entry) {
 function renderDetailPage(detail, listItem) {
   const ws = detail.workstream;
   const latest = detail.recent_entries[0]?.preview || listItem?.latest || "No recent task recorded yet.";
+  const repoText =
+    ws.repo_relation === "current"
+      ? "This workstream matches the repo you are currently in."
+      : ws.workspace
+        ? `Warning: this workstream was saved in ${ws.workspace}.`
+        : "Repo is unknown for this workstream.";
   renderShell(`
     <section class="panel detail-page">
       <div class="panel-head">
@@ -164,6 +179,10 @@ function renderDetailPage(detail, listItem) {
         <div class="info-card">
           <p class="label">Most Recent Task</p>
           <p class="value">${escapeHtml(latest)}</p>
+        </div>
+        <div class="info-card">
+          <p class="label">Repo</p>
+          <p class="value">${escapeHtml(repoText)}</p>
         </div>
       </div>
 

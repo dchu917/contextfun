@@ -11,10 +11,12 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .cli import (
+    _current_workspace_path,
     _delete_entry_attachments,
     _delete_search_docs_for_entry,
     _entry_load_behavior,
     _entry_role,
+    _effective_workspace_for_workstream,
     _fts_query,
     _fts_tokens,
     _get_current_workstream,
@@ -24,6 +26,7 @@ from .cli import (
     _set_current_workstream,
     _table_exists,
     _load_control_counts,
+    _workspace_relation,
     _workstream_one_line_summary,
     connect,
     init_db,
@@ -183,18 +186,24 @@ class CtxWebApp:
         sql += " GROUP BY w.id ORDER BY w.id DESC"
         current = self.current()
         current_id = int(current["id"]) if current else None
+        current_workspace = _current_workspace_path()
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
             items = []
             for row in rows:
                 sources = self._workstream_sources(conn, int(row["id"]))
+                effective_workspace = _effective_workspace_for_workstream(conn, row)
+                repo_relation = _workspace_relation(current_workspace, effective_workspace)
                 items.append(
                     {
                         "id": int(row["id"]),
                         "slug": row["slug"],
                         "title": row["title"],
                         "description": row["description"] or "",
-                        "workspace": row["workspace"] or "",
+                        "workspace": effective_workspace,
+                        "workspace_explicit": row["workspace"] or "",
+                        "repo_relation": repo_relation,
+                        "repo_name": Path(effective_workspace).name if effective_workspace else "",
                         "created_at": row["created_at"],
                         "goal": _goal_text(row),
                         "latest": _workstream_latest_preview(conn, int(row["id"])),
@@ -206,6 +215,7 @@ class CtxWebApp:
                         "current": current_id == int(row["id"]),
                     }
                 )
+        items.sort(key=lambda item: (0 if item["repo_relation"] == "current" else 1, -item["id"]))
         return items
 
     def workstream_detail(self, slug: str) -> dict | None:
@@ -279,6 +289,9 @@ class CtxWebApp:
             if not meaningful:
                 meaningful = recent_entries[:20]
             current = self.current()
+            current_workspace = _current_workspace_path()
+            effective_workspace = _effective_workspace_for_workstream(conn, row)
+            repo_relation = _workspace_relation(current_workspace, effective_workspace)
             pinned_count, excluded_count = _load_control_counts(conn, int(row["id"]))
             return {
                 "workstream": {
@@ -286,7 +299,11 @@ class CtxWebApp:
                     "slug": row["slug"],
                     "title": row["title"],
                     "description": row["description"] or "",
-                    "workspace": row["workspace"] or "",
+                    "workspace": effective_workspace,
+                    "workspace_explicit": row["workspace"] or "",
+                    "repo_relation": repo_relation,
+                    "repo_name": Path(effective_workspace).name if effective_workspace else "",
+                    "current_workspace": current_workspace,
                     "created_at": row["created_at"],
                     "goal": _goal_text(row),
                     "summary": _workstream_one_line_summary(conn, row),

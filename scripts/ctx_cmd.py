@@ -10,8 +10,16 @@ import json
 import re
 from typing import List, Dict, Optional, Tuple
 
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from contextfun.cli import (
+    _current_workspace_path as _ctx_current_workspace_path,
+    _effective_workspace_for_workstream,
+    _workspace_relation,
+)
+
 LIB = ROOT / "lib"
 
 
@@ -55,8 +63,21 @@ def run_ctx_passthrough(args_list):
     return subprocess.call(cmd, cwd=str(ROOT), env=env)
 
 
+def _invocation_workspace() -> str:
+    try:
+        return _ctx_current_workspace_path()
+    except Exception:
+        try:
+            return str(Path.cwd().resolve())
+        except Exception:
+            return str(Path.cwd())
+
+
 def ensure_workstream(name, set_current=False, unique_if_exists=False):
     args = ["workstream-ensure", name]
+    workspace = _invocation_workspace()
+    if workspace:
+        args += ["--workspace", workspace]
     if set_current:
         args.append("--set-current")
     if unique_if_exists:
@@ -75,6 +96,9 @@ def rename_workstream(ref: str, new_name: str):
 
 def create_session(agent=None, title: str = "New session"):
     args = ["session-new", title]
+    workspace = _invocation_workspace()
+    if workspace:
+        args += ["--workspace", workspace]
     if agent:
         args += ["--agent", agent]
     return int(run_ctx(args).strip())
@@ -671,6 +695,24 @@ def _render_loaded_output(
         return _resume_pack_text(str(workstream["slug"]), focus=focus, fmt=fmt, brief=brief, max_sessions=12, max_entries=240)
     recent_entries = _recent_entry_rows(int(ws_row["id"]), limit=4)
     pinned_count, excluded_count = _load_control_counts(int(ws_row["id"]))
+    current_workspace = _invocation_workspace()
+    with _connect_db() as conn:
+        effective_workspace = _effective_workspace_for_workstream(conn, ws_row)
+    workspace_relation = _workspace_relation(current_workspace, effective_workspace)
+    workspace_note = ""
+    if effective_workspace:
+        if workspace_relation == "current":
+            workspace_note = f"this repo (`{effective_workspace}`)" if fmt == "markdown" else f"this repo ({effective_workspace})"
+        elif current_workspace:
+            workspace_note = (
+                f"warning: this workstream was in `{effective_workspace}`; current repo is `{current_workspace}`"
+                if fmt == "markdown"
+                else f"warning: this workstream was in {effective_workspace}; current repo is {current_workspace}"
+            )
+        else:
+            workspace_note = f"`{effective_workspace}`" if fmt == "markdown" else effective_workspace
+    else:
+        workspace_note = "unknown"
     if compress:
         pack_mode, pack_text = _select_loaded_pack(str(workstream["slug"]), focus=focus, fmt=fmt, brief=brief)
     else:
@@ -707,6 +749,7 @@ def _render_loaded_output(
             f"- Action: {action_label}",
             f"- Session: {session_label}",
             f"- Goal: {goal}",
+            f"- Repo: {workspace_note}",
             f"- Linked transcripts: {links}",
             f"- Load controls: {pinned_count} pinned | {excluded_count} excluded",
             f"- Pack mode: {pack_mode}",
@@ -737,6 +780,7 @@ def _render_loaded_output(
         f"Action: {action_label}",
         f"Session: {session_label}",
         f"Goal: {goal}",
+        f"Repo: {workspace_note}",
         f"Linked transcripts: {links}",
         f"Load controls: {pinned_count} pinned | {excluded_count} excluded",
         f"Pack mode: {pack_mode}",

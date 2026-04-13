@@ -257,6 +257,14 @@ Command semantics:
 - `ctx rename <new-name>` renames the current workstream
 - `ctx rename <new-name> --from <old-name>` renames a specific workstream
 
+Repo awareness:
+
+- `ctx` records the current repo/workspace when you create new workstreams or sessions
+- `ctx list` sorts workstreams from the current repo first and marks them with `[this repo]`
+- workstreams from other repos stay visible, but they are labeled with their source repo such as `[repo: spatial-fun]`
+- `ctx resume <name>` shows an explicit warning if that workstream was originally in a different repo than the one you are currently in
+- for older workstreams created before repo capture was wired, `ctx` tries to infer the repo from saved `cwd` / `workdir` traces in the stored context
+
 Load curation:
 
 - use the browser detail page to pin, exclude, or delete specific saved entries

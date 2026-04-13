@@ -843,6 +843,116 @@ def _preview_text(text, limit: int = 100) -> str:
     return collapsed
 
 
+def _repo_root_for_path(path: Path) -> Path | None:
+    current = path if path.is_dir() else path.parent
+    for candidate in [current, *current.parents]:
+        git_marker = candidate / ".git"
+        if git_marker.exists():
+            return candidate
+    return None
+
+
+def _normalize_workspace_path(raw: str | None) -> str:
+    if not raw:
+        return ""
+    try:
+        path = Path(os.path.expanduser(str(raw))).resolve()
+    except Exception:
+        try:
+            path = Path(os.path.expanduser(str(raw)))
+        except Exception:
+            return ""
+    root = _repo_root_for_path(path)
+    return str(root or (path if path.is_dir() else path.parent))
+
+
+def _current_workspace_path() -> str:
+    return _normalize_workspace_path(os.getcwd())
+
+
+def _workspace_repo_name(workspace: str | None) -> str:
+    normalized = _normalize_workspace_path(workspace)
+    if not normalized:
+        return ""
+    return Path(normalized).name
+
+
+def _extract_workspace_candidates(text: str) -> list[str]:
+    value = str(text or "")
+    candidates: list[str] = []
+    patterns = [
+        r"<cwd>([^<]+)</cwd>",
+        r'"workdir"\s*:\s*"([^"]+)"',
+        r"'workdir'\s*:\s*'([^']+)'",
+        r"\bcd\s+(/Users/[A-Za-z0-9._/\-]+)",
+        r"\bcd\s+(~/[A-Za-z0-9._/\-]+)",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, value):
+            candidate = match.group(1).strip()
+            if candidate:
+                candidates.append(candidate)
+    return candidates
+
+
+def _effective_workspace_for_workstream(conn: sqlite3.Connection, workstream_row: sqlite3.Row) -> str:
+    explicit = _normalize_workspace_path(workstream_row["workspace"] if "workspace" in workstream_row.keys() else None)
+    if explicit:
+        return explicit
+    session_rows = conn.execute(
+        """
+        SELECT workspace
+        FROM session
+        WHERE workstream_id = ? AND workspace IS NOT NULL AND workspace != ''
+        ORDER BY id ASC
+        LIMIT 12
+        """,
+        (int(workstream_row["id"]),),
+    ).fetchall()
+    for row in session_rows:
+        normalized = _normalize_workspace_path(row["workspace"])
+        if normalized:
+            return normalized
+    entry_rows = conn.execute(
+        """
+        SELECT e.content
+        FROM entry e
+        JOIN session s ON s.id = e.session_id
+        WHERE s.workstream_id = ?
+        ORDER BY e.id ASC
+        LIMIT 160
+        """,
+        (int(workstream_row["id"]),),
+    ).fetchall()
+    for row in entry_rows:
+        for candidate in _extract_workspace_candidates(str(row["content"] or "")):
+            normalized = _normalize_workspace_path(candidate)
+            if normalized:
+                return normalized
+    return ""
+
+
+def _workspace_relation(current_workspace: str | None, target_workspace: str | None) -> str:
+    current = _normalize_workspace_path(current_workspace)
+    target = _normalize_workspace_path(target_workspace)
+    if not current or not target:
+        return "unknown"
+    return "current" if current == target else "other"
+
+
+def _workspace_badge(current_workspace: str | None, target_workspace: str | None) -> str:
+    target = _normalize_workspace_path(target_workspace)
+    if not target:
+        return ""
+    relation = _workspace_relation(current_workspace, target)
+    if relation == "current":
+        return " [this repo]"
+    repo_name = _workspace_repo_name(target)
+    if repo_name:
+        return f" [repo: {repo_name}]"
+    return f" [repo: {target}]"
+
+
 def _looks_like_ctx_noise(text: str) -> bool:
     collapsed = " ".join((text or "").strip().split()).lower()
     if not collapsed:
@@ -1585,11 +1695,19 @@ def _workstream_one_line_summary(conn: sqlite3.Connection, row: sqlite3.Row) -> 
 
 
 def _print_workstreams(rows: list[sqlite3.Row], conn: sqlite3.Connection):
+    current_workspace = _current_workspace_path()
+    decorated = []
     for r in rows:
+        effective_workspace = _effective_workspace_for_workstream(conn, r)
+        relation = _workspace_relation(current_workspace, effective_workspace)
+        decorated.append((0 if relation == "current" else 1, -int(r["id"]), r, effective_workspace))
+    decorated.sort(key=lambda item: (item[0], item[1]))
+    for _rank, _neg_id, r, effective_workspace in decorated:
         tags = f" [{r['tags']}]" if r["tags"] else ""
-        ws = f" ({r['workspace']})" if r["workspace"] else ""
+        ws = f" ({effective_workspace})" if effective_workspace else ""
         summary = _workstream_one_line_summary(conn, r)
-        print(f"{r['id']}: {r['slug']} - {r['title']}{tags}{ws} - {summary}")
+        badge = _workspace_badge(current_workspace, effective_workspace)
+        print(f"{r['id']}: {r['slug']} - {r['title']}{tags}{ws} - {summary}{badge}")
 
 
 def cmd_workstream_list(args: argparse.Namespace):
@@ -1632,8 +1750,12 @@ def cmd_workstream_show(args: argparse.Namespace):
             print(f"  Description: {w['description']}")
         if w["tags"]:
             print(f"  Tags: {w['tags']}")
-        if w["workspace"]:
-            print(f"  Workspace: {w['workspace']}")
+        effective_workspace = _effective_workspace_for_workstream(conn, w)
+        if effective_workspace:
+            if w["workspace"]:
+                print(f"  Workspace: {effective_workspace}")
+            else:
+                print(f"  Workspace: {effective_workspace} (inferred)")
         print(f"  Created: {w['created_at']}")
         if w["metadata"]:
             try:
