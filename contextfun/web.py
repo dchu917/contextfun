@@ -129,6 +129,26 @@ class CtxWebApp:
             "title": cur.get("title", cur["slug"]),
         }
 
+    def _workstream_sources(self, conn: sqlite3.Connection, workstream_id: int) -> list[str]:
+        sources: set[str] = set()
+        if _table_exists(conn, "session_source_link"):
+            for row in conn.execute(
+                "SELECT DISTINCT source FROM session_source_link WHERE workstream_id = ?",
+                (workstream_id,),
+            ).fetchall():
+                source = str(row["source"] or "").strip().lower()
+                if source:
+                    sources.add(source)
+        if not sources:
+            for row in conn.execute(
+                "SELECT DISTINCT agent FROM session WHERE workstream_id = ?",
+                (workstream_id,),
+            ).fetchall():
+                agent = str(row["agent"] or "").strip().lower()
+                if agent in {"claude", "codex"}:
+                    sources.add(agent)
+        return sorted(sources)
+
     def workstreams(self, query: str | None = None) -> list[dict]:
         sql = """
             SELECT
@@ -153,6 +173,7 @@ class CtxWebApp:
             rows = conn.execute(sql, params).fetchall()
             items = []
             for row in rows:
+                sources = self._workstream_sources(conn, int(row["id"]))
                 items.append(
                     {
                         "id": int(row["id"]),
@@ -167,6 +188,7 @@ class CtxWebApp:
                         "session_count": int(row["session_count"] or 0),
                         "entry_count": int(row["entry_count"] or 0),
                         "last_activity_at": row["last_activity_at"] or row["created_at"],
+                        "sources": sources,
                         "current": current_id == int(row["id"]),
                     }
                 )

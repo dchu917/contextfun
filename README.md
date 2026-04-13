@@ -114,16 +114,15 @@ ctx-web --open
 
 What the frontend gives you:
 
-- current workstream status at a glance
-- searchable list of workstreams with goal and latest-task summaries
-- structured workstream detail with sessions, transcript bindings, and recent entries
-- start, resume, branch, delete, and set-current actions from the page
-- an expandable full ctx load panel so you can inspect exactly what was loaded
+- a clean searchable list of workstreams
+- date and source type for each workstream (`codex`, `claude`, or `both`)
+- a plain-language summary of what each workstream was doing
+- the exact Claude and Codex commands to continue or start a fresh session in that workstream
 
 Frontend note:
 
-- In the browser, prefer pasting seed context into the form instead of relying on `--pull`
-- `--pull` captures the current frontmost macOS app, which is usually not what you want if the browser itself is frontmost
+- the browser is meant to help you find the right workstream and continue it from Claude or Codex
+- use the shown commands in your agent client after you find the stream you want
 
 ## Daily Use
 
