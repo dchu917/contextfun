@@ -953,6 +953,18 @@ def _workspace_badge(current_workspace: str | None, target_workspace: str | None
     return f" [repo: {target}]"
 
 
+def _repo_scope_match(current_workspace: str | None, target_workspace: str | None, scope: str | None) -> bool:
+    normalized_scope = str(scope or "").strip().lower()
+    if not normalized_scope or normalized_scope == "all":
+        return True
+    relation = _workspace_relation(current_workspace, target_workspace)
+    if normalized_scope == "current":
+        return relation == "current"
+    if normalized_scope == "other":
+        return relation == "other"
+    return True
+
+
 def _looks_like_ctx_noise(text: str) -> bool:
     collapsed = " ".join((text or "").strip().split()).lower()
     if not collapsed:
@@ -1727,6 +1739,12 @@ def cmd_workstream_list(args: argparse.Namespace):
     sql = " ".join(q)
     with connect(db) as conn:
         rows = conn.execute(sql, params).fetchall()
+        if getattr(args, "this_repo", False):
+            current_workspace = _current_workspace_path()
+            rows = [
+                r for r in rows
+                if _repo_scope_match(current_workspace, _effective_workspace_for_workstream(conn, r), "current")
+            ]
         if args.format == "slugs":
             for r in rows:
                 print(r["slug"])
@@ -1960,6 +1978,7 @@ def cmd_search(args: argparse.Namespace):
     db = Path(args.db)
     init_db(db, quiet=True)
     with connect(db) as conn:
+        current_workspace = _current_workspace_path()
         tokens = _fts_tokens(args.query)
         fts_q = _fts_query(tokens, "AND")
         if _table_exists(conn, "search_index") and fts_q:
@@ -1987,6 +2006,19 @@ def cmd_search(args: argparse.Namespace):
                     rows = _fts_rows(loose_q)
                     if rows:
                         search_mode = "loose-or"
+            if getattr(args, "this_repo", False):
+                filtered_rows = []
+                workspace_cache: dict[int, str] = {}
+                for row in rows:
+                    wsid = int(row["workstream_id"]) if row["workstream_id"] else None
+                    if wsid is None:
+                        continue
+                    if wsid not in workspace_cache:
+                        ws_row = conn.execute("SELECT * FROM workstream WHERE id = ?", (wsid,)).fetchone()
+                        workspace_cache[wsid] = _effective_workspace_for_workstream(conn, ws_row) if ws_row else ""
+                    if _repo_scope_match(current_workspace, workspace_cache[wsid], "current"):
+                        filtered_rows.append(row)
+                rows = filtered_rows
             if not rows:
                 print("No matches")
                 return
@@ -2056,6 +2088,19 @@ def cmd_search(args: argparse.Namespace):
         )
         like = f"%{args.query}%"
         rows = conn.execute(q, (like, like, args.limit)).fetchall()
+        if getattr(args, "this_repo", False):
+            filtered_rows = []
+            workspace_cache: dict[int, str] = {}
+            for row in rows:
+                ws_row = conn.execute("SELECT * FROM workstream WHERE id = (SELECT workstream_id FROM session WHERE id = ?)", (int(row["session_id"]),)).fetchone()
+                wsid = int(ws_row["id"]) if ws_row else None
+                if wsid is None:
+                    continue
+                if wsid not in workspace_cache:
+                    workspace_cache[wsid] = _effective_workspace_for_workstream(conn, ws_row)
+                if _repo_scope_match(current_workspace, workspace_cache[wsid], "current"):
+                    filtered_rows.append(row)
+            rows = filtered_rows
     for r in rows:
         print(f"[E{r['entry_id']}] S{r['session_id']}: {r['title']} ({r['type']}) - {r['created_at']}")
 
@@ -2404,6 +2449,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(p_w_list)
     p_w_list.add_argument("--tag", help="Filter by tag")
     p_w_list.add_argument("--query", help="Search slug/title/description")
+    p_w_list.add_argument("--this-repo", action="store_true", help="Show only workstreams linked to the current repo")
     p_w_list.add_argument("--format", choices=["plain", "slugs"], default="plain")
     p_w_list.set_defaults(func=cmd_workstream_list)
 
@@ -2596,6 +2642,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(p_search)
     p_search.add_argument("query", help="Search query")
     p_search.add_argument("--limit", type=int, default=8, help="Max grouped results to show")
+    p_search.add_argument("--this-repo", action="store_true", help="Search only workstreams linked to the current repo")
     p_search.set_defaults(func=cmd_search)
 
     # export

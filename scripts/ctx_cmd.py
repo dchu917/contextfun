@@ -1414,12 +1414,18 @@ def _should_auto_pull(flag_auto: bool, flag_no_auto: bool) -> bool:
     return default_on
 
 
-def list_workstreams():
-    return run_ctx(["workstream-list"]).rstrip()
+def list_workstreams(*, this_repo: bool = False):
+    args = ["workstream-list"]
+    if this_repo:
+        args.append("--this-repo")
+    return run_ctx(args).rstrip()
 
 
-def search_context(query: str, limit: int = 8):
-    return run_ctx(["search", query, "--limit", str(limit)]).rstrip()
+def search_context(query: str, limit: int = 8, *, this_repo: bool = False):
+    args = ["search", query, "--limit", str(limit)]
+    if this_repo:
+        args.append("--this-repo")
+    return run_ctx(args).rstrip()
 
 
 def main():
@@ -1436,9 +1442,11 @@ def main():
     p_new.add_argument("--no-compress", action="store_true", help="Do not compress the load output")
 
     p_list = sub.add_parser("list", help="/ctx list")
+    p_list.add_argument("--this-repo", action="store_true", help="Show only workstreams linked to the current repo")
     p_search = sub.add_parser("search", help="/ctx search <query>")
     p_search.add_argument("query", nargs="+")
     p_search.add_argument("--limit", type=int, default=8)
+    p_search.add_argument("--this-repo", action="store_true", help="Search only workstreams linked to the current repo")
 
     p_go = sub.add_parser("go", help="Resume an existing workstream")
     p_go.add_argument("name")
@@ -1571,9 +1579,15 @@ def main():
             )
         )
     elif args.cmd == "list":
-        sys.stdout.write(list_workstreams() + "\n")
+        sys.stdout.write(list_workstreams(this_repo=getattr(args, "this_repo", False)) + "\n")
     elif args.cmd == "search":
-        sys.stdout.write(search_context(" ".join(args.query), limit=args.limit) + "\n")
+        sys.stdout.write(
+            search_context(
+                " ".join(args.query),
+                limit=args.limit,
+                this_repo=getattr(args, "this_repo", False),
+            ) + "\n"
+        )
     elif args.cmd == "go":
         compress = _should_compress(getattr(args, "compress", False), getattr(args, "no_compress", False))
         ws = require_workstream(args.name, set_current=True)

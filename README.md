@@ -186,7 +186,9 @@ Codex:
 
 - `ctx`
 - `ctx list`
+- `ctx list --this-repo`
 - `ctx search dataset download`
+- `ctx search dataset download --this-repo`
 - `ctx web --open`
 - `ctx start my-stream`
 - `ctx start my-stream --pull`
@@ -261,9 +263,12 @@ Repo awareness:
 
 - `ctx` records the current repo/workspace when you create new workstreams or sessions
 - `ctx list` sorts workstreams from the current repo first and marks them with `[this repo]`
+- `ctx list --this-repo` shows only workstreams linked to the current repo
+- `ctx search <query> --this-repo` searches only workstreams linked to the current repo
 - workstreams from other repos stay visible, but they are labeled with their source repo such as `[repo: spatial-fun]`
 - `ctx resume <name>` shows an explicit warning if that workstream was originally in a different repo than the one you are currently in
 - for older workstreams created before repo capture was wired, `ctx` tries to infer the repo from saved `cwd` / `workdir` traces in the stored context
+- the browser UI now has the same repo filter, so you can switch between all repos, this repo, and other repos
 
 Load curation:
 

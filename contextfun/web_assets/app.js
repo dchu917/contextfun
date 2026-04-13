@@ -47,9 +47,64 @@ function sourceLabel(item) {
   return "other";
 }
 
+function repoDisplay(item) {
+  if (!item) {
+    return { label: "repo unknown", detail: "No linked repo saved yet.", tone: "unknown" };
+  }
+  if (item.repo_relation === "current") {
+    return {
+      label: item.repo_name ? item.repo_name : "this repo",
+      detail: item.workspace ? item.workspace : "Matches the repo you are currently in.",
+      tone: "current",
+    };
+  }
+  if (item.repo_name) {
+    return {
+      label: item.repo_name,
+      detail: item.workspace || `Saved in ${item.repo_name}`,
+      tone: "other",
+    };
+  }
+  if (item.workspace) {
+    return {
+      label: "other repo",
+      detail: item.workspace,
+      tone: "other",
+    };
+  }
+  return { label: "repo unknown", detail: "No linked repo saved yet.", tone: "unknown" };
+}
+
+function scopeFromUrl() {
+  const url = new URL(window.location.href);
+  const scope = url.searchParams.get("scope") || "all";
+  return ["all", "current", "other"].includes(scope) ? scope : "all";
+}
+
+function setScopeInUrl(scope) {
+  const url = new URL(window.location.href);
+  if (!scope || scope === "all") {
+    url.searchParams.delete("scope");
+  } else {
+    url.searchParams.set("scope", scope);
+  }
+  window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+}
+
+function syncScopeButtons(scope) {
+  document.querySelectorAll("[data-scope]").forEach((button) => {
+    button.classList.toggle("is-active", button.getAttribute("data-scope") === scope);
+  });
+}
+
 function currentSlugFromPath() {
   const match = window.location.pathname.match(/^\/workstreams\/(.+)$/);
   return match ? decodeURIComponent(match[1]) : null;
+}
+
+function currentSearchSuffix() {
+  const search = window.location.search || "";
+  return search;
 }
 
 function renderShell(content) {
@@ -61,14 +116,7 @@ function renderListPage(items) {
     ? items
         .map((item) => {
           const latest = item.latest || "No recent task recorded yet.";
-          const repoNote =
-            item.repo_relation === "current"
-              ? `This repo`
-              : item.repo_name
-                ? `Saved in ${item.repo_name}`
-                : item.workspace
-                  ? `Saved in ${item.workspace}`
-                  : `Repo unknown`;
+          const repo = repoDisplay(item);
           return `
             <a class="ws-link" href="/workstreams/${encodeURIComponent(item.slug)}" data-nav="${escapeHtml(item.slug)}">
               <article class="ws-card">
@@ -77,7 +125,10 @@ function renderListPage(items) {
                     <div class="ws-title">${escapeHtml(item.title)}</div>
                     <div class="ws-slug">${escapeHtml(item.slug)}</div>
                     <div class="ws-copy">This workstream was focused on ${escapeHtml(item.goal || item.title)}. Most recent task: ${escapeHtml(latest)}</div>
-                    <div class="ws-copy muted">${escapeHtml(repoNote)}</div>
+                    <div class="repo-link-row">
+                      <span class="pill repo ${escapeHtml(repo.tone)}">linked repo: ${escapeHtml(repo.label)}</span>
+                      <span class="repo-path">${escapeHtml(repo.detail)}</span>
+                    </div>
                   </div>
                   <div class="ws-meta">
                     <span class="pill">${escapeHtml(formatDate(item.last_activity_at))}</span>
@@ -105,7 +156,7 @@ function renderListPage(items) {
     link.addEventListener("click", (event) => {
       event.preventDefault();
       const slug = link.getAttribute("data-nav");
-      window.history.pushState({}, "", `/workstreams/${encodeURIComponent(slug)}`);
+      window.history.pushState({}, "", `/workstreams/${encodeURIComponent(slug)}${currentSearchSuffix()}`);
       boot().catch(showError);
     });
   });
@@ -152,6 +203,7 @@ function recentItem(entry) {
 function renderDetailPage(detail, listItem) {
   const ws = detail.workstream;
   const latest = detail.recent_entries[0]?.preview || listItem?.latest || "No recent task recorded yet.";
+  const repo = repoDisplay(ws);
   const repoText =
     ws.repo_relation === "current"
       ? "This workstream matches the repo you are currently in."
@@ -168,6 +220,10 @@ function renderDetailPage(detail, listItem) {
         <div>
           <h2>${escapeHtml(ws.title)}</h2>
           <div class="ws-slug">${escapeHtml(ws.slug)}</div>
+          <div class="detail-repo-row">
+            <span class="pill repo ${escapeHtml(repo.tone)}">linked repo: ${escapeHtml(repo.label)}</span>
+            <span class="repo-path">${escapeHtml(repo.detail)}</span>
+          </div>
         </div>
       </div>
 
@@ -217,7 +273,7 @@ function renderDetailPage(detail, listItem) {
 
   document.getElementById("back-link").addEventListener("click", (event) => {
     event.preventDefault();
-    window.history.pushState({}, "", "/");
+    window.history.pushState({}, "", `/${currentSearchSuffix()}`);
     boot().catch(showError);
   });
 
@@ -234,7 +290,7 @@ function renderDetailPage(detail, listItem) {
       result?.detail?.workstream?.slug ||
       result?.current?.slug ||
       slugifyForPath(newName);
-    window.history.pushState({}, "", `/workstreams/${encodeURIComponent(nextSlug)}`);
+    window.history.pushState({}, "", `/workstreams/${encodeURIComponent(nextSlug)}${currentSearchSuffix()}`);
     boot().catch(showError);
   });
 
@@ -271,7 +327,16 @@ function showError(error) {
 
 async function boot() {
   const query = document.getElementById("filter-query").value.trim();
-  const payload = await api(query ? `/api/workstreams?query=${encodeURIComponent(query)}` : "/api/workstreams");
+  const scope = scopeFromUrl();
+  syncScopeButtons(scope);
+  const params = new URLSearchParams();
+  if (query) {
+    params.set("query", query);
+  }
+  if (scope !== "all") {
+    params.set("scope", scope);
+  }
+  const payload = await api(params.toString() ? `/api/workstreams?${params.toString()}` : "/api/workstreams");
   const slug = currentSlugFromPath();
   if (slug) {
     const detail = await api(`/api/workstreams/${encodeURIComponent(slug)}`);
@@ -286,9 +351,20 @@ function bindEvents() {
   const input = document.getElementById("filter-query");
   input.addEventListener("input", async () => {
     if (currentSlugFromPath()) {
-      window.history.replaceState({}, "", "/");
+      const url = new URL(window.location.href);
+      window.history.replaceState({}, "", `/${url.search}`);
     }
     await boot().catch(showError);
+  });
+  document.querySelectorAll("[data-scope]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      setScopeInUrl(button.getAttribute("data-scope") || "all");
+      if (currentSlugFromPath()) {
+        const url = new URL(window.location.href);
+        window.history.replaceState({}, "", `/${url.search}`);
+      }
+      await boot().catch(showError);
+    });
   });
   window.addEventListener("popstate", () => {
     boot().catch(showError);

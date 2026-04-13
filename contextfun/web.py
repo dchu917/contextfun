@@ -26,6 +26,7 @@ from .cli import (
     _set_current_workstream,
     _table_exists,
     _load_control_counts,
+    _repo_scope_match,
     _workspace_relation,
     _workstream_one_line_summary,
     connect,
@@ -166,7 +167,7 @@ class CtxWebApp:
                     sources.add(agent)
         return sorted(sources)
 
-    def workstreams(self, query: str | None = None) -> list[dict]:
+    def workstreams(self, query: str | None = None, scope: str | None = None) -> list[dict]:
         sql = """
             SELECT
                 w.*,
@@ -215,6 +216,9 @@ class CtxWebApp:
                         "current": current_id == int(row["id"]),
                     }
                 )
+        normalized_scope = str(scope or "all").strip().lower()
+        if normalized_scope in {"current", "other"}:
+            items = [item for item in items if _repo_scope_match(current_workspace, item["workspace"], normalized_scope)]
         items.sort(key=lambda item: (0 if item["repo_relation"] == "current" else 1, -item["id"]))
         return items
 
@@ -391,8 +395,9 @@ class CtxWebApp:
             "detail_slug": slug,
         }
 
-    def search(self, query: str, limit: int = 8) -> dict:
+    def search(self, query: str, limit: int = 8, scope: str | None = None) -> dict:
         with self._connect() as conn:
+            current_workspace = _current_workspace_path()
             tokens = _fts_tokens(query)
             fts_q = _fts_query(tokens, "AND")
             search_mode = "strict"
@@ -421,6 +426,20 @@ class CtxWebApp:
                         rows = fts_rows(loose_q)
                         if rows:
                             search_mode = "loose-or"
+            normalized_scope = str(scope or "all").strip().lower()
+            if normalized_scope in {"current", "other"}:
+                filtered_rows = []
+                workspace_cache: dict[int, str] = {}
+                for row in rows:
+                    wsid = int(row["workstream_id"]) if row["workstream_id"] else None
+                    if wsid is None:
+                        continue
+                    if wsid not in workspace_cache:
+                        ws_row = conn.execute("SELECT * FROM workstream WHERE id = ?", (wsid,)).fetchone()
+                        workspace_cache[wsid] = _effective_workspace_for_workstream(conn, ws_row) if ws_row else ""
+                    if _repo_scope_match(current_workspace, workspace_cache[wsid], normalized_scope):
+                        filtered_rows.append(row)
+                rows = filtered_rows
             if not rows:
                 like = f"%{query}%"
                 rows = conn.execute(
@@ -446,6 +465,19 @@ class CtxWebApp:
                     (like, like, like, like, max(limit * 4, 12)),
                 ).fetchall()
                 search_mode = "fallback-like"
+                if normalized_scope in {"current", "other"}:
+                    filtered_rows = []
+                    workspace_cache: dict[int, str] = {}
+                    for row in rows:
+                        wsid = int(row["workstream_id"]) if row["workstream_id"] else None
+                        if wsid is None:
+                            continue
+                        if wsid not in workspace_cache:
+                            ws_row = conn.execute("SELECT * FROM workstream WHERE id = ?", (wsid,)).fetchone()
+                            workspace_cache[wsid] = _effective_workspace_for_workstream(conn, ws_row) if ws_row else ""
+                        if _repo_scope_match(current_workspace, workspace_cache[wsid], normalized_scope):
+                            filtered_rows.append(row)
+                    rows = filtered_rows
             kind_priority = {"entry": 0, "session": 1, "workstream": 2}
             grouped: dict[str, dict] = {}
             for row in rows:
@@ -502,6 +534,7 @@ class CtxWebApp:
             return {
                 "query": query,
                 "mode": search_mode,
+                "scope": normalized_scope or "all",
                 "workstreams": workstreams,
                 "matches": matches,
             }
@@ -674,7 +707,8 @@ def build_handler(app: CtxWebApp):
                 return
             if path == "/api/workstreams":
                 query = (qs.get("query") or [""])[0].strip() or None
-                self._send_json({"items": app.workstreams(query=query)})
+                scope = (qs.get("scope") or ["all"])[0].strip() or "all"
+                self._send_json({"items": app.workstreams(query=query, scope=scope), "scope": scope})
                 return
             if path.startswith("/api/workstreams/"):
                 slug = unquote(path.removeprefix("/api/workstreams/"))
@@ -692,9 +726,11 @@ def build_handler(app: CtxWebApp):
                 except Exception:
                     limit = 8
                 if not query:
-                    self._send_json({"query": "", "mode": "empty", "workstreams": [], "matches": []})
+                    scope = (qs.get("scope") or ["all"])[0].strip() or "all"
+                    self._send_json({"query": "", "mode": "empty", "scope": scope, "workstreams": [], "matches": []})
                     return
-                self._send_json(app.search(query, limit=limit))
+                scope = (qs.get("scope") or ["all"])[0].strip() or "all"
+                self._send_json(app.search(query, limit=limit, scope=scope))
                 return
             self._send_json({"error": "not found"}, status=404)
 

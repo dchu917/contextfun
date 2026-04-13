@@ -14,12 +14,14 @@ Supported chat-style commands in this repo:
   - If that is unavailable, run `python3 scripts/ctx_cmd.py list`.
   - Return stdout directly.
   - If the user typed the plain `ctx list` form, do not describe it as `ctx-list` or say you are using the alias skill. Prefer the exact command the user typed.
+  - `ctx list --this-repo` should show only workstreams linked to the current repo.
 
 - `ctx search <query>`
   - Run `ctx search <query>`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py search <query>`.
   - Return the grouped search results directly.
   - Prefer using this when the user asks to find the relevant workstream or recall prior context.
+  - `ctx search <query> --this-repo` should search only workstreams linked to the current repo.
 
 - `ctx start [--pull] <workstream>`
   - Treat `--pull` strictly as a flag, never as part of the workstream name.

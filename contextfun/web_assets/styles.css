@@ -99,6 +99,8 @@ h2 {
 .toolbar {
   padding: 16px 18px;
   margin-bottom: 18px;
+  display: grid;
+  gap: 12px;
 }
 
 .search-field {
@@ -106,6 +108,34 @@ h2 {
   gap: 6px;
   color: var(--muted);
   font-size: 0.92rem;
+}
+
+.scope-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scope-button {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.scope-button:hover {
+  background: #fafaf8;
+}
+
+.scope-button.is-active {
+  background: #111111;
+  border-color: #111111;
+  color: #ffffff;
 }
 
 input {
@@ -196,9 +226,44 @@ input {
   font-size: 0.93rem;
 }
 
+.repo-link-row,
+.detail-repo-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.repo-path {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.pill.repo {
+  background: var(--soft);
+}
+
+.pill.repo.current {
+  background: #eef6ee;
+  color: #1f5d32;
+}
+
+.pill.repo.other {
+  background: #f7f1ea;
+  color: #8a4d18;
+}
+
+.pill.repo.unknown {
+  background: #f1f2f5;
+  color: #58606b;
+}
+
 .info-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   margin-bottom: 14px;
 }
