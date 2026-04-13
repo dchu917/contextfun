@@ -12,12 +12,12 @@ Claude Code chat          Codex chat
           \              /
            v            v
       +----------------------+
-      |   workstream: mono   |
+      | workstream: feature-audit |
       |   claude:  abc123    |
       |   codex:   def456    |
       +----------------------+
                  |
-                 +--> mono-v2 branch
+                 +--> feature-audit-v2 branch
 ```
 
 ## Why `ctx`
@@ -42,13 +42,13 @@ cd ctx
 Claude Code:
 
 ```text
-/ctx start mono --pull
+/ctx start feature-audit --pull
 ```
 
 Codex:
 
 ```bash
-ctx start mono --pull
+ctx start feature-audit --pull
 ```
 
 3. Come back later and resume or branch:
@@ -56,15 +56,15 @@ ctx start mono --pull
 Claude Code:
 
 ```text
-/ctx resume mono
-/ctx branch mono mono-v2
+/ctx resume feature-audit
+/ctx branch feature-audit feature-audit-v2
 ```
 
 Codex:
 
 ```bash
-ctx resume mono
-ctx branch mono mono-v2
+ctx resume feature-audit
+ctx branch feature-audit feature-audit-v2
 ```
 
 ## Quick Start
