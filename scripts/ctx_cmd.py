@@ -43,19 +43,38 @@ def _command_cwd() -> str:
         return str(ROOT)
 
 
+def _current_or_parent_db() -> Optional[Path]:
+    try:
+        current = Path(_command_cwd()).resolve()
+    except Exception:
+        return None
+    for candidate in [current, *current.parents]:
+        db = candidate / ".contextfun" / "context.db"
+        if db.exists():
+            return db.resolve()
+    return None
+
+
+def _augment_pythonpath(env: Dict[str, str]) -> None:
+    paths: List[str] = []
+    if LIB.exists():
+        paths.append(str(LIB))
+    if ROOT.exists():
+        paths.append(str(ROOT))
+    existing = env.get("PYTHONPATH", "")
+    if existing:
+        paths.append(existing)
+    if paths:
+        env["PYTHONPATH"] = os.pathsep.join(paths)
+
+
 def run_ctx(args_list, input_data=None):
     cmd = [sys.executable, "-m", "contextfun"]
-    db = os.getenv("CONTEXTFUN_DB")
-    if db:
-        cmd += ["--db", db]
+    cmd += ["--db", str(_db_path())]
     cmd += args_list
     try:
         env = os.environ.copy()
-        # Ensure our installed lib path is visible to Python
-        if LIB.exists():
-            env["PYTHONPATH"] = (
-                (str(LIB) + os.pathsep + env.get("PYTHONPATH", "")) if env.get("PYTHONPATH") else str(LIB)
-            )
+        _augment_pythonpath(env)
         out = subprocess.check_output(
             cmd,
             stderr=subprocess.STDOUT,
@@ -71,15 +90,10 @@ def run_ctx(args_list, input_data=None):
 
 def run_ctx_passthrough(args_list):
     cmd = [sys.executable, "-m", "contextfun"]
-    db = os.getenv("CONTEXTFUN_DB")
-    if db:
-        cmd += ["--db", db]
+    cmd += ["--db", str(_db_path())]
     cmd += args_list
     env = os.environ.copy()
-    if LIB.exists():
-        env["PYTHONPATH"] = (
-            (str(LIB) + os.pathsep + env.get("PYTHONPATH", "")) if env.get("PYTHONPATH") else str(LIB)
-        )
+    _augment_pythonpath(env)
     return subprocess.call(cmd, cwd=_command_cwd(), env=env)
 
 
@@ -258,7 +272,11 @@ def _db_path() -> Path:
     env_db = os.getenv("CONTEXTFUN_DB")
     if env_db:
         return Path(os.path.expanduser(env_db)).resolve()
-    return (ROOT / ".contextfun" / "context.db").resolve()
+    local_db = _current_or_parent_db()
+    if local_db is not None:
+        return local_db
+    ctx_home = Path(os.path.expanduser(os.getenv("CTX_HOME", "~/.contextfun"))).resolve()
+    return (ctx_home / "context.db").resolve()
 
 
 def lookup_workstream(name: str) -> Optional[Dict[str, object]]:

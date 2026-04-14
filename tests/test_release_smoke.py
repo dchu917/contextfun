@@ -165,6 +165,26 @@ class CtxReleaseSmokeTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn(".contextfun", proc.stdout)
 
+    def test_ctx_cmd_prefers_local_repo_db_when_present(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_dir = Path(tmp)
+            local_db = repo_dir / ".contextfun" / "context.db"
+            local_db.parent.mkdir(parents=True, exist_ok=True)
+            local_db.write_text("", encoding="utf-8")
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+                ctx_cmd, "_command_cwd", return_value=str(repo_dir)
+            ):
+                resolved = ctx_cmd._db_path()
+        self.assertEqual(resolved, local_db.resolve())
+
+    def test_ctx_cmd_pythonpath_includes_repo_root(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        env = {}
+        ctx_cmd._augment_pythonpath(env)
+        pythonpath = env.get("PYTHONPATH", "")
+        self.assertIn(str(ROOT), pythonpath)
+
     def test_pull_feedback_mentions_clipboard_fallback(self):
         ctx_cmd = _load_ctx_cmd_module()
         with mock.patch.object(ctx_cmd.subprocess, "check_output", return_value=b"clipboard text"), mock.patch.object(
