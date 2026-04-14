@@ -105,6 +105,14 @@ It does the local setup:
 
 Then restart your client.
 
+If you already use `skills.sh` and want the experimental skill install in one line:
+
+```bash
+npx skills add https://github.com/dchu917/ctx --skill ctx -y -g
+```
+
+That installs the `ctx` skill instructions. You should still install the `ctx` CLI itself with `./setup.sh` after cloning, or use the global installer under `Other Install Options`.
+
 ## Experimental: OpenCode And Cursor
 
 `ctx` now includes project-local experimental command scaffolding for both OpenCode and Cursor.
@@ -175,6 +183,7 @@ Claude Code:
 - `/ctx rename better-name`
 - `/ctx rename better-name --from old-name`
 - `/ctx delete my-stream`
+- `/ctx curate my-stream`
 - `/ctx branch source-stream target-stream`
 - `/branch source-stream target-stream`
 
@@ -193,6 +202,7 @@ Codex:
 - `ctx rename better-name`
 - `ctx rename better-name --from old-name`
 - `ctx delete my-stream`
+- `ctx curate my-stream`
 - `ctx branch source-stream target-stream`
 
 Codex note:
@@ -270,6 +280,11 @@ Repo awareness:
 Load curation:
 
 - use the browser detail page to pin, exclude, or delete specific saved entries
+- use `ctx curate <workstream>` for a terminal UI that lets you scroll saved entries and:
+  - `p` pin an entry so it always loads
+  - `x` exclude an entry from future loads
+  - `a` restore default loading
+  - `d` delete the saved entry entirely
 - pinned entries are always included in future packs, even in compressed mode
 - excluded entries remain saved and searchable, but are omitted from future packs
 - if you want the same control from the core CLI, use:
@@ -286,10 +301,10 @@ Experimental command surfaces:
 
 ## Experimental: skills.sh
 
-You can install `ctx` as a single experimental skill package from this repo:
+Easy install:
 
 ```bash
-npx skills add https://github.com/dchu917/ctx --skill ctx
+npx skills add https://github.com/dchu917/ctx --skill ctx -y -g
 ```
 
 Notes:
@@ -297,6 +312,7 @@ Notes:
 - this installs the `ctx` skill instructions, not the `ctx` CLI binary
 - users should still install the CLI with `./setup.sh` after cloning, or with the global installer under `Other Install Options`
 - the published skill name is `ctx`
+- this repo is structured so `skills add` can install `ctx` directly from GitHub, even if it is not yet visibly listed on the `skills.sh` website
 
 ## Load Output And Compression
 
@@ -470,8 +486,10 @@ ctx resume my-stream
 ctx rename better-name
 ctx rename better-name --from old-name
 ctx delete my-stream
+ctx curate my-stream
 ctx delete --session-id 123
 ctx branch old-stream new-stream
+ctx web --open
 ```
 
 Core Python CLI examples:

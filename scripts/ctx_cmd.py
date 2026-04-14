@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import textwrap
 import os
 import sqlite3
 import subprocess
@@ -17,11 +18,15 @@ if str(ROOT) not in sys.path:
 from contextfun.cli import (
     ClosingConnection,
     _attach_dir,
+    _delete_entry_attachments,
+    _delete_search_docs_for_entry,
     _current_workspace_path as _ctx_current_workspace_path,
+    _entry_load_behavior,
     _effective_workspace_for_workstream,
     _index_entry,
     _index_session,
     _index_workstream,
+    _set_entry_load_behavior,
     _workspace_relation,
     now_iso,
 )
@@ -299,6 +304,245 @@ def _connect_db() -> sqlite3.Connection:
     conn = sqlite3.connect(str(_db_path()), factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _resolve_curation_workstream(name: Optional[str]) -> Dict[str, object]:
+    target = name or os.getenv("CTX_AGENT_WORKSTREAM")
+    if target:
+        return require_workstream(target)
+    ws = current_workstream()
+    if ws:
+        return ws
+    print("Provide a workstream name, set CTX_AGENT_WORKSTREAM, or resume/start a workstream first.", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def _curation_entries(workstream_id: int) -> List[Dict[str, object]]:
+    with _connect_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                e.id,
+                e.session_id,
+                e.type,
+                e.content,
+                e.extras,
+                e.created_at,
+                s.title AS session_title,
+                COALESCE(s.agent, 'other') AS agent
+            FROM entry e
+            JOIN session s ON s.id = e.session_id
+            WHERE s.workstream_id = ?
+            ORDER BY e.id DESC
+            """,
+            (workstream_id,),
+        ).fetchall()
+    items: List[Dict[str, object]] = []
+    for row in rows:
+        items.append(
+            {
+                "id": int(row["id"]),
+                "session_id": int(row["session_id"]),
+                "type": row["type"] or "note",
+                "content": row["content"] or "",
+                "created_at": row["created_at"] or "",
+                "session_title": row["session_title"] or "",
+                "agent": row["agent"] or "other",
+                "load_behavior": _entry_load_behavior(row),
+                "noisy": _looks_like_ctx_noise(row["content"]),
+            }
+        )
+    return items
+
+
+def _curation_set_mode(entry_id: int, mode: str) -> str:
+    with _connect_db() as conn:
+        _set_entry_load_behavior(conn, entry_id, mode)
+        conn.commit()
+    return f"Entry {entry_id} set to {mode}"
+
+
+def _curation_delete_entry(entry_id: int) -> str:
+    with _connect_db() as conn:
+        row = conn.execute(
+            """
+            SELECT e.id, e.session_id, e.type
+            FROM entry e
+            WHERE e.id = ?
+            """,
+            (entry_id,),
+        ).fetchone()
+        if not row:
+            raise SystemExit(f"Entry {entry_id} not found")
+        _delete_search_docs_for_entry(conn, entry_id)
+        conn.execute("DELETE FROM entry WHERE id = ?", (entry_id,))
+        conn.commit()
+        session_id = int(row["session_id"])
+        entry_type = row["type"] or "note"
+    _delete_entry_attachments(_db_path(), session_id, entry_id)
+    return f"Deleted entry {entry_id} ({entry_type})"
+
+
+def _launch_curation_ui(workstream: Dict[str, object]) -> int:
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print("Interactive curation requires a real terminal. Use `ctx web --open` if you are in a non-interactive shell.", file=sys.stderr)
+        return 2
+    try:
+        import curses
+    except Exception:
+        print("Interactive terminal UI is unavailable on this Python build. Use `ctx web --open` instead.", file=sys.stderr)
+        return 2
+
+    def _screen(stdscr) -> int:
+        try:
+            curses.curs_set(0)
+        except Exception:
+            pass
+        stdscr.keypad(True)
+        selected_id: Optional[int] = None
+        cursor = 0
+        top = 0
+        expanded = False
+        status = "j/k or arrows move, Enter expand, d delete, x exclude, p pin, a default, q quit"
+        pending_delete: Optional[int] = None
+
+        while True:
+            entries = _curation_entries(int(workstream["id"]))
+            if selected_id is not None:
+                for idx, item in enumerate(entries):
+                    if item["id"] == selected_id:
+                        cursor = idx
+                        break
+                else:
+                    cursor = min(cursor, max(0, len(entries) - 1))
+                    selected_id = entries[cursor]["id"] if entries else None
+            elif entries:
+                cursor = min(cursor, len(entries) - 1)
+                selected_id = entries[cursor]["id"]
+
+            h, w = stdscr.getmaxyx()
+            header_lines = 4
+            preview_h = max(8, h // 2) if expanded else max(6, h // 3)
+            list_h = max(3, h - header_lines - preview_h - 1)
+
+            if cursor < top:
+                top = cursor
+            if cursor >= top + list_h:
+                top = cursor - list_h + 1
+            if top < 0:
+                top = 0
+
+            stdscr.erase()
+            header = f"ctx curate: {workstream['slug']} — saved memory browser"
+            stdscr.addnstr(0, 0, header, max(0, w - 1), curses.A_BOLD)
+            stdscr.addnstr(
+                1,
+                0,
+                "Scroll saved entries, then pin, exclude, or delete them. This changes ctx memory only, not the original Claude/Codex transcript file.",
+                max(0, w - 1),
+            )
+            if pending_delete is not None:
+                stdscr.addnstr(
+                    2,
+                    0,
+                    f"Confirm delete entry {pending_delete}: press y to delete, any other key to cancel.",
+                    max(0, w - 1),
+                    curses.A_BOLD,
+                )
+            else:
+                stdscr.addnstr(2, 0, status, max(0, w - 1))
+            stdscr.hline(3, 0, ord("-"), max(1, w - 1))
+
+            if not entries:
+                stdscr.addnstr(4, 0, "No saved entries found in this workstream.", max(0, w - 1))
+                stdscr.refresh()
+                key = stdscr.getch()
+                if key in (ord("q"), 27):
+                    return 0
+                continue
+
+            visible = entries[top : top + list_h]
+            for row_idx, item in enumerate(visible):
+                y = header_lines + row_idx
+                marker = ">" if (top + row_idx) == cursor else " "
+                mode_map = {"pin": "[pin]", "exclude": "[skip]", "default": "[load]"}
+                noisy = " noise" if item["noisy"] else ""
+                preview = _preview_text(item["content"], limit=max(30, w - 36))
+                line = (
+                    f"{marker} E{item['id']} {mode_map.get(item['load_behavior'], '[load]')} "
+                    f"{item['type']} S{item['session_id']} @{item['agent']}{noisy} {preview}"
+                )
+                attr = curses.A_REVERSE if (top + row_idx) == cursor else curses.A_NORMAL
+                stdscr.addnstr(y, 0, line, max(0, w - 1), attr)
+
+            selected = entries[cursor]
+            stdscr.hline(header_lines + list_h, 0, ord("-"), max(1, w - 1))
+            preview_title = (
+                f"Preview E{selected['id']} — {selected['type']} — {selected['created_at']} — {selected['session_title'] or 'Untitled session'}"
+            )
+            stdscr.addnstr(header_lines + list_h + 1, 0, preview_title, max(0, w - 1), curses.A_BOLD)
+            wrapped = textwrap.wrap(selected["content"] or "(empty)", width=max(20, w - 2), replace_whitespace=False)
+            preview_lines = wrapped[: max(1, preview_h - 2)]
+            if len(wrapped) > len(preview_lines):
+                preview_lines[-1] = _preview_text(preview_lines[-1], limit=max(20, w - 8)) + " ..."
+            for idx, line in enumerate(preview_lines):
+                stdscr.addnstr(header_lines + list_h + 2 + idx, 0, line, max(0, w - 1))
+
+            stdscr.refresh()
+            key = stdscr.getch()
+
+            if pending_delete is not None:
+                if key in (ord("y"), ord("Y")):
+                    deleted_id = pending_delete
+                    status = _curation_delete_entry(deleted_id)
+                    pending_delete = None
+                    if entries:
+                        remaining = [item for item in entries if item["id"] != deleted_id]
+                        if remaining:
+                            cursor = min(cursor, len(remaining) - 1)
+                            selected_id = remaining[cursor]["id"]
+                        else:
+                            cursor = 0
+                            selected_id = None
+                    continue
+                pending_delete = None
+                status = "Delete cancelled."
+                continue
+
+            if key in (ord("q"), 27):
+                return 0
+            if key in (curses.KEY_UP, ord("k")):
+                cursor = max(0, cursor - 1)
+                selected_id = entries[cursor]["id"]
+            elif key in (curses.KEY_DOWN, ord("j")):
+                cursor = min(len(entries) - 1, cursor + 1)
+                selected_id = entries[cursor]["id"]
+            elif key == curses.KEY_PPAGE:
+                cursor = max(0, cursor - list_h)
+                selected_id = entries[cursor]["id"]
+            elif key == curses.KEY_NPAGE:
+                cursor = min(len(entries) - 1, cursor + list_h)
+                selected_id = entries[cursor]["id"]
+            elif key in (curses.KEY_HOME, ord("g")):
+                cursor = 0
+                selected_id = entries[cursor]["id"]
+            elif key == curses.KEY_END or key == ord("G"):
+                cursor = len(entries) - 1
+                selected_id = entries[cursor]["id"]
+            elif key in (10, 13, curses.KEY_ENTER):
+                expanded = not expanded
+            elif key == ord("p"):
+                status = _curation_set_mode(selected["id"], "pin")
+            elif key == ord("x"):
+                status = _curation_set_mode(selected["id"], "exclude")
+            elif key == ord("a"):
+                status = _curation_set_mode(selected["id"], "default")
+            elif key == ord("d"):
+                pending_delete = selected["id"]
+
+        return 0
+
+    return curses.wrapper(_screen)
 
 
 def _capture_frontmost_copy() -> bool:
@@ -1907,6 +2151,10 @@ def main():
     p_delete = sub.add_parser("delete", help="Delete a session by id, or delete the latest session in a workstream")
     p_delete.add_argument("name", nargs="?", help="Workstream slug or title; deletes the latest session in that workstream")
     p_delete.add_argument("--session-id", type=int, help="Delete this specific session id")
+    p_delete.add_argument("--interactive", action="store_true", help="Open an interactive terminal UI to curate saved entries in a workstream")
+
+    p_curate = sub.add_parser("curate", help="Interactively scroll, pin, exclude, or delete saved entries in a workstream")
+    p_curate.add_argument("name", nargs="?", help="Workstream slug or title (defaults to current)")
 
     # Hidden expert command: pull transcripts explicitly
     p_pull = sub.add_parser("pull", help="Pull transcript(s) from Codex/Claude and ingest into the latest session")
@@ -2178,6 +2426,12 @@ def main():
             )
         )
     elif args.cmd == "delete":
+        if getattr(args, "interactive", False):
+            if args.session_id is not None:
+                print("Choose either --interactive or --session-id, not both.", file=sys.stderr)
+                return 2
+            ws = _resolve_curation_workstream(args.name)
+            return _launch_curation_ui(ws)
         if args.session_id is not None:
             sys.stdout.write(run_ctx(["session-delete", str(args.session_id)]))
         else:
@@ -2191,6 +2445,9 @@ def main():
                 return 1
             sid = run_ctx(["session-latest", "--workstream-slug", str(ws["slug"])]).strip()
             sys.stdout.write(run_ctx(["session-delete", sid]))
+    elif args.cmd == "curate":
+        ws = _resolve_curation_workstream(args.name)
+        return _launch_curation_ui(ws)
     elif args.cmd == "note":
         if args.text is None and sys.stdin.isatty():
             print("Provide text or pipe stdin", file=sys.stderr)

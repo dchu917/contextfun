@@ -152,6 +152,17 @@ class CtxReleaseSmokeTests(unittest.TestCase):
             )
         self.assertEqual(note, "Pull capture: frontmost copy failed; existing clipboard text was ingested instead.")
 
+    def test_curation_entries_exposes_saved_entries(self):
+        self.assertEqual(self.run_ctx("start", "curate-demo", "--no-auto-pull").returncode, 0)
+        self.assertEqual(self.run_ctx("note", "Keep this memory available for curation.").returncode, 0)
+        ctx_cmd = _load_ctx_cmd_module()
+        with mock.patch.dict(os.environ, self.env, clear=False):
+            ws = ctx_cmd.lookup_workstream("curate-demo")
+            self.assertIsNotNone(ws)
+            entries = ctx_cmd._curation_entries(int(ws["id"]))
+        self.assertTrue(entries)
+        self.assertIn("Keep this memory available for curation.", entries[0]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()
