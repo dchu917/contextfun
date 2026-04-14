@@ -295,8 +295,8 @@ Load curation:
 
 Experimental command surfaces:
 
-- OpenCode: `/ctx`, `/ctx-list`, `/ctx-search`, `/ctx-start`, `/ctx-resume`, `/ctx-rename`, `/ctx-delete`, `/ctx-branch`, `/ctx-web`
-- Cursor: `/ctx`, `/ctx-list`, `/ctx-search`, `/ctx-start`, `/ctx-resume`, `/ctx-rename`, `/ctx-delete`, `/ctx-branch`, `/ctx-web`
+- OpenCode: `/ctx`, with subcommands like `/ctx list`, `/ctx search`, `/ctx start`, `/ctx resume`, `/ctx rename`, `/ctx delete`, `/ctx branch`, and `/ctx web`
+- Cursor: `/ctx`, with the same subcommand shape as above
 - These are included as project-local experimental command files. The stable interface remains the plain `ctx ...` command family.
 
 ## Experimental: skills.sh

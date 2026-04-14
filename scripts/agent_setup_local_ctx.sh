@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Project-local agent setup: downloads ContextFun into ./ctx and wires env vars.
+# Project-local agent setup: downloads ctx into ./ctx and wires env vars.
 # Usage in Claude Code / Codex terminal:
 #   source <(curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/agent_setup_local_ctx.sh)
 
 REPO_URL="https://github.com/dchu917/ctx"
-ARCHIVE_URL="$REPO_URL/archive/refs/heads/main.tar.gz"
+DEFAULT_REF="v0.1.0"
+CTX_REF="${CTX_VERSION:-$DEFAULT_REF}"
+if [[ "$CTX_REF" == "main" ]]; then
+  ARCHIVE_URL="$REPO_URL/archive/refs/heads/main.tar.gz"
+else
+  TAG_REF="${CTX_REF#refs/tags/}"
+  ARCHIVE_URL="$REPO_URL/archive/refs/tags/$TAG_REF.tar.gz"
+fi
 
 PREFIX="$PWD/ctx"
 BIN_DIR="$PREFIX/bin"
@@ -18,7 +25,7 @@ mkdir -p "$BIN_DIR" "$LIB_DIR"
 if [[ ! -d "$LIB_DIR/contextfun" ]]; then
   TMPDIR=$(mktemp -d)
   trap 'rm -rf "$TMPDIR"' EXIT
-  echo "Downloading ContextFun into ./ctx ..."
+  echo "Downloading ctx into ./ctx (ref: $CTX_REF) ..."
   curl -fsSL "$ARCHIVE_URL" | tar xz -C "$TMPDIR"
   SRC_DIR=$(find "$TMPDIR" -maxdepth 1 -type d -name 'contextfun-*' | head -n1)
   cp -R "$SRC_DIR/contextfun" "$LIB_DIR/"
@@ -34,4 +41,4 @@ fi
 export CONTEXTFUN_DB="$DB_PATH"
 export PATH="$BIN_DIR:$PATH"
 
-echo "ContextFun ready in ./ctx (DB: $DB_PATH). Commands available: ctx, python3 -m contextfun"
+echo "ctx ready in ./ctx (DB: $DB_PATH). Commands available: ctx, python3 -m contextfun"

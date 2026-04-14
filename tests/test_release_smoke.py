@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CTX_CMD = ROOT / "scripts" / "ctx_cmd.py"
 INSTALL_SH = ROOT / "scripts" / "install.sh"
 INSTALL_SKILLS_SH = ROOT / "scripts" / "install_skills.sh"
+AGENT_SETUP_LOCAL_SH = ROOT / "scripts" / "agent_setup_local_ctx.sh"
 CLI_PY = ROOT / "contextfun" / "cli.py"
 WEB_PY = ROOT / "contextfun" / "web.py"
 
@@ -119,6 +120,12 @@ class CtxReleaseSmokeTests(unittest.TestCase):
         self.assertIn('CTX_INSTALL_SKILLS', text)
         self.assertIn('install -m 0755 "$SRC_DIR/scripts/ctx_cmd.py" "$BIN_DIR/ctx"', text)
         self.assertNotIn("Compatibility aliases also work:", text)
+
+    def test_local_agent_setup_script_is_release_pinned(self):
+        text = AGENT_SETUP_LOCAL_SH.read_text(encoding="utf-8")
+        self.assertIn('DEFAULT_REF="v0.1.0"', text)
+        self.assertIn('archive/refs/tags/', text)
+        self.assertIn("Downloading ctx into ./ctx", text)
 
     def test_cli_uses_stable_user_home_and_future_annotations(self):
         cli_text = CLI_PY.read_text(encoding="utf-8")
