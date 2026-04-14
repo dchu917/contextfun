@@ -83,11 +83,8 @@ function scopeFromUrl() {
 
 function setScopeInUrl(scope) {
   const url = new URL(window.location.href);
-  if (!scope || scope === "all") {
-    url.searchParams.delete("scope");
-  } else {
-    url.searchParams.set("scope", scope);
-  }
+  const nextScope = ["all", "current", "other"].includes(scope || "") ? scope : "current";
+  url.searchParams.set("scope", nextScope || "current");
   window.history.replaceState({}, "", `${url.pathname}${url.search}`);
 }
 
