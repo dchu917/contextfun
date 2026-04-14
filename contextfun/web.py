@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -101,6 +103,7 @@ def _split_ctx_output(text: str) -> dict:
 class CtxWebApp:
     def __init__(self, db_path: Path):
         self.db_path = db_path.resolve()
+        self.launch_cwd = Path.cwd().resolve()
         os.environ["CONTEXTFUN_DB"] = str(self.db_path)
         init_db(self.db_path, quiet=True)
 
@@ -121,7 +124,7 @@ class CtxWebApp:
     def _run_ctx(self, args: list[str], input_text: str | None = None) -> dict:
         proc = subprocess.run(
             self._ctx_invocation() + args,
-            cwd=str(REPO_ROOT) if (REPO_ROOT / "scripts" / "ctx_cmd.py").exists() else None,
+            cwd=str(self.launch_cwd),
             env=self._ctx_env(),
             input=input_text,
             capture_output=True,

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 import argparse
 import textwrap
 import os
@@ -34,8 +36,15 @@ from contextfun.cli import (
 LIB = ROOT / "lib"
 
 
+def _command_cwd() -> str:
+    try:
+        return str(Path.cwd().resolve())
+    except Exception:
+        return str(ROOT)
+
+
 def run_ctx(args_list, input_data=None):
-    cmd = ["python3", "-m", "contextfun"]
+    cmd = [sys.executable, "-m", "contextfun"]
     db = os.getenv("CONTEXTFUN_DB")
     if db:
         cmd += ["--db", db]
@@ -50,7 +59,7 @@ def run_ctx(args_list, input_data=None):
         out = subprocess.check_output(
             cmd,
             stderr=subprocess.STDOUT,
-            cwd=str(ROOT),
+            cwd=_command_cwd(),
             env=env,
             input=(input_data.encode() if isinstance(input_data, str) else None),
         )
@@ -61,7 +70,7 @@ def run_ctx(args_list, input_data=None):
 
 
 def run_ctx_passthrough(args_list):
-    cmd = ["python3", "-m", "contextfun"]
+    cmd = [sys.executable, "-m", "contextfun"]
     db = os.getenv("CONTEXTFUN_DB")
     if db:
         cmd += ["--db", db]
@@ -71,7 +80,7 @@ def run_ctx_passthrough(args_list):
         env["PYTHONPATH"] = (
             (str(LIB) + os.pathsep + env.get("PYTHONPATH", "")) if env.get("PYTHONPATH") else str(LIB)
         )
-    return subprocess.call(cmd, cwd=str(ROOT), env=env)
+    return subprocess.call(cmd, cwd=_command_cwd(), env=env)
 
 
 def _invocation_workspace() -> str:

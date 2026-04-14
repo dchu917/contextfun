@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CTX_CMD = ROOT / "scripts" / "ctx_cmd.py"
 INSTALL_SH = ROOT / "scripts" / "install.sh"
 INSTALL_SKILLS_SH = ROOT / "scripts" / "install_skills.sh"
+CLI_PY = ROOT / "contextfun" / "cli.py"
+WEB_PY = ROOT / "contextfun" / "web.py"
 
 
 def _load_ctx_cmd_module():
@@ -109,6 +111,17 @@ class CtxReleaseSmokeTests(unittest.TestCase):
         self.assertIn('install -m 0755 "$SRC_DIR/scripts/ctx_cmd.py" "$BIN_DIR/ctx"', text)
         self.assertNotIn("Compatibility aliases also work:", text)
 
+    def test_cli_uses_stable_user_home_and_future_annotations(self):
+        cli_text = CLI_PY.read_text(encoding="utf-8")
+        web_text = WEB_PY.read_text(encoding="utf-8")
+        ctx_text = CTX_CMD.read_text(encoding="utf-8")
+        self.assertIn("from __future__ import annotations", cli_text)
+        self.assertIn("from __future__ import annotations", web_text)
+        self.assertIn("from __future__ import annotations", ctx_text)
+        self.assertIn('CTX_HOME', cli_text)
+        self.assertIn('~/.contextfun', cli_text)
+        self.assertIn('cmd = [sys.executable, "-m", "contextfun"]', ctx_text)
+
     def test_install_skills_supports_alternate_skills_root(self):
         with tempfile.TemporaryDirectory() as codex_dir, tempfile.TemporaryDirectory() as claude_dir:
             proc = subprocess.run(
@@ -137,6 +150,20 @@ class CtxReleaseSmokeTests(unittest.TestCase):
         text = skill_file.read_text(encoding="utf-8")
         self.assertIn("name: ctx", text)
         self.assertIn("single `ctx` entrypoint", text)
+
+    def test_system_python39_can_import_cli_module(self):
+        py39 = Path("/usr/bin/python3")
+        if not py39.exists():
+            self.skipTest("system python3 not available")
+        proc = subprocess.run(
+            [str(py39), "-c", "import importlib.util, pathlib; p=pathlib.Path('contextfun/cli.py'); spec=importlib.util.spec_from_file_location('ctx_cli', p); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); print(m.DEFAULT_HOME)"],
+            cwd=str(ROOT),
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn(".contextfun", proc.stdout)
 
     def test_pull_feedback_mentions_clipboard_fallback(self):
         ctx_cmd = _load_ctx_cmd_module()

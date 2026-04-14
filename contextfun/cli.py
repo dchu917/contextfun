@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -9,8 +11,8 @@ from pathlib import Path
 import re
 
 
-# Default to a project-local store to avoid sandbox issues
-DEFAULT_HOME = Path.cwd() / ".contextfun"
+# Default to a stable user-level store unless CONTEXTFUN_DB overrides it.
+DEFAULT_HOME = Path(os.path.expanduser(os.getenv("CTX_HOME", "~/.contextfun"))).resolve()
 DEFAULT_DB = DEFAULT_HOME / "context.db"
 ATTACH_DIR = DEFAULT_HOME / "attachments"
 CURRENT_FILE = DEFAULT_HOME / "current.json"
