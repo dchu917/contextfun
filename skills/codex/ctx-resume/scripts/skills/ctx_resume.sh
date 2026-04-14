@@ -20,10 +20,8 @@ if [[ -n "$NAME" ]]; then
   CMD+=("$NAME")
 fi
 
-if [[ -x "$SHIM_DIR/ctx-resume" ]]; then
-  exec "$SHIM_DIR/ctx-resume" "${CMD[@]}"
-elif command -v ctx-resume >/dev/null 2>&1; then
-  exec ctx-resume "${CMD[@]}"
+if [[ -x "$SHIM_DIR/ctx" ]]; then
+  exec "$SHIM_DIR/ctx" resume "${CMD[@]}"
 elif command -v ctx >/dev/null 2>&1; then
   exec ctx resume "${CMD[@]}"
 elif [[ -n "$REPO" ]]; then

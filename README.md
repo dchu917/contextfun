@@ -100,7 +100,7 @@ It does the local setup:
 
 - creates `./.contextfun/context.db`
 - writes `./ctx.env`
-- installs `ctx`, `ctx-list`, `ctx-search`, `ctx-start`, `ctx-resume`, `ctx-delete`, `ctx-branch`, and `ctx-web` into `~/.contextfun/bin`
+- installs `ctx` into `~/.contextfun/bin`
 - links local skills into `~/.claude/skills` and `~/.codex/skills`
 
 Then restart your client.
@@ -112,13 +112,13 @@ Then restart your client.
 OpenCode:
 
 - command files live in `.opencode/commands/`
-- includes `/ctx`, `/ctx-list`, `/ctx-search`, `/ctx-start`, `/ctx-resume`, `/ctx-rename`, `/ctx-delete`, `/ctx-branch`, and `/ctx-web`
+- they forward into the single `ctx` CLI entrypoint
 - OpenCode also documents support for project command files, `AGENTS.md`, and Claude-compatible skill locations
 
 Cursor:
 
 - command files live in `.cursor/commands/`
-- includes `/ctx`, `/ctx-list`, `/ctx-search`, `/ctx-start`, `/ctx-resume`, `/ctx-rename`, `/ctx-delete`, `/ctx-branch`, and `/ctx-web`
+- they forward into the single `ctx` CLI entrypoint
 - Cursor also supports project custom slash commands and project instructions such as `AGENTS.md`
 
 Important:
@@ -142,12 +142,6 @@ Open the local browser UI from the terminal or the agent shell:
 
 ```bash
 ctx web --open
-```
-
-Or, if you want an explicit alias:
-
-```bash
-ctx-web --open
 ```
 
 What the frontend gives you:
@@ -205,7 +199,6 @@ Codex note:
 
 - Codex does not currently support repo-defined custom slash commands like `/ctx list`.
 - In Codex, use the installed `ctx` command with subcommands.
-- Compatibility aliases like `ctx-list`, `ctx-search`, `ctx-start`, `ctx-resume`, `ctx-delete`, `ctx-branch`, and `ctx-web` still exist, but they are no longer the primary interface.
 - When `ctx start`, `ctx resume`, or `ctx branch` load context, they now print:
   - a short summary of what the workstream is
   - the latest session being targeted
@@ -251,7 +244,6 @@ Search indexing:
 - `ctx` indexes workstreams, sessions, and entries into a local SQLite FTS index as they are created or ingested
 - imported or ingested conversation chunks become searchable immediately
 - `ctx search <query>` returns the best matching workstreams first, then the top matching snippets
-- compatibility alias: `ctx-search <query>`
 
 Command semantics:
 
@@ -291,6 +283,20 @@ Experimental command surfaces:
 - OpenCode: `/ctx`, `/ctx-list`, `/ctx-search`, `/ctx-start`, `/ctx-resume`, `/ctx-rename`, `/ctx-delete`, `/ctx-branch`, `/ctx-web`
 - Cursor: `/ctx`, `/ctx-list`, `/ctx-search`, `/ctx-start`, `/ctx-resume`, `/ctx-rename`, `/ctx-delete`, `/ctx-branch`, `/ctx-web`
 - These are included as project-local experimental command files. The stable interface remains the plain `ctx ...` command family.
+
+## Experimental: skills.sh
+
+You can install `ctx` as a single experimental skill package from this repo:
+
+```bash
+npx skills add https://github.com/dchu917/ctx --skill ctx
+```
+
+Notes:
+
+- this installs the `ctx` skill instructions, not the `ctx` CLI binary
+- users should still install the CLI with `./setup.sh` after cloning, or with the global installer under `Other Install Options`
+- the published skill name is `ctx`
 
 ## Load Output And Compression
 
@@ -466,17 +472,6 @@ ctx rename better-name --from old-name
 ctx delete my-stream
 ctx delete --session-id 123
 ctx branch old-stream new-stream
-```
-
-Compatibility aliases still supported:
-
-```bash
-ctx-list
-ctx-search dataset download
-ctx-start my-stream --pull
-ctx-resume my-stream
-ctx-delete my-stream
-ctx-branch old-stream new-stream
 ```
 
 Core Python CLI examples:

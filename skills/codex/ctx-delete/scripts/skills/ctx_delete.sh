@@ -14,10 +14,8 @@ for _ in 1 2 3 4 5 6 7 8; do
   SEARCH="$CAND"
 done
 
-if [[ -x "$SHIM_DIR/ctx-delete" ]]; then
-  exec "$SHIM_DIR/ctx-delete" "$@"
-elif command -v ctx-delete >/dev/null 2>&1; then
-  exec ctx-delete "$@"
+if [[ -x "$SHIM_DIR/ctx" ]]; then
+  exec "$SHIM_DIR/ctx" delete "$@"
 elif command -v ctx >/dev/null 2>&1; then
   exec ctx delete "$@"
 elif [[ -n "$REPO" ]]; then

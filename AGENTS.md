@@ -62,14 +62,9 @@ Supported chat-style commands in this repo:
   - Summarize the new branch briefly, mention the last task that was being worked on in the inherited context, mention the latest inherited context, and ask how the user wants to proceed.
   - Make it explicit that in Codex the user can inspect the full command output with `ctrl-t`, and in Claude they can expand the tool output block.
 
-- Compatibility aliases:
-  - `ctx-list`, `ctx-search`, `ctx-start`, `ctx-resume`, `ctx-delete`, `ctx-branch`
-  - These should behave the same as the `ctx <subcommand>` forms above.
-  - Treat these as compatibility aliases only. Prefer the plain `ctx <subcommand>` wording whenever the user typed that form.
-
 Behavior notes:
 
 - Claude Code supports local skill folders under `~/.claude/skills`.
-- Codex does not currently support repo-defined custom slash commands like `/ctx-list`.
+- Codex does not currently support repo-defined custom slash commands like `/ctx list`.
 - In Codex, prefer plain `ctx`, `ctx list`, `ctx search`, `ctx start`, `ctx resume`, `ctx delete`, and `ctx branch` messages or run the same commands in the terminal.
 - If `CTX_AGENT_WORKSTREAM` is set, it is the default workstream when the command omits a name.

@@ -106,6 +106,8 @@ class CtxReleaseSmokeTests(unittest.TestCase):
         self.assertIn('rsync -a "$SRC_DIR/skills/" "$SKILLS_DIR/"', text)
         self.assertIn('install_skills.sh', text)
         self.assertIn('CTX_INSTALL_SKILLS', text)
+        self.assertIn('install -m 0755 "$SRC_DIR/scripts/ctx_cmd.py" "$BIN_DIR/ctx"', text)
+        self.assertNotIn("Compatibility aliases also work:", text)
 
     def test_install_skills_supports_alternate_skills_root(self):
         with tempfile.TemporaryDirectory() as codex_dir, tempfile.TemporaryDirectory() as claude_dir:
@@ -128,6 +130,13 @@ class CtxReleaseSmokeTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertTrue((Path(codex_dir) / "ctx-start" / "SKILL.md").exists())
             self.assertTrue((Path(claude_dir) / "ctx" / "SKILL.md").exists())
+
+    def test_skills_sh_skill_exists(self):
+        skill_file = ROOT / "skills" / "ctx" / "SKILL.md"
+        self.assertTrue(skill_file.exists())
+        text = skill_file.read_text(encoding="utf-8")
+        self.assertIn("name: ctx", text)
+        self.assertIn("single `ctx` entrypoint", text)
 
     def test_pull_feedback_mentions_clipboard_fallback(self):
         ctx_cmd = _load_ctx_cmd_module()

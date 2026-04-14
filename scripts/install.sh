@@ -41,36 +41,14 @@ rsync -a "$SRC_DIR/contextfun/" "$LIB_DIR/contextfun/"
 install -m 0755 "$SRC_DIR/scripts/ctx_cmd.py" "$BIN_DIR/ctx"
 rsync -a "$SRC_DIR/skills/" "$SKILLS_DIR/"
 
-# Also install convenience shims so Codex/Claude can call dashed commands directly
-cat > "$BIN_DIR/ctx-list" <<EOF_SH
-#!/usr/bin/env bash
-exec "$BIN_DIR/ctx" list
-EOF_SH
-cat > "$BIN_DIR/ctx-search" <<EOF_SH
-#!/usr/bin/env bash
-exec "$BIN_DIR/ctx" search "$@"
-EOF_SH
-cat > "$BIN_DIR/ctx-resume" <<EOF_SH
-#!/usr/bin/env bash
-exec "$BIN_DIR/ctx" go "$@"
-EOF_SH
-cat > "$BIN_DIR/ctx-start" <<EOF_SH
-#!/usr/bin/env bash
-exec "$BIN_DIR/ctx" start "$@"
-EOF_SH
-cat > "$BIN_DIR/ctx-delete" <<EOF_SH
-#!/usr/bin/env bash
-exec "$BIN_DIR/ctx" delete "$@"
-EOF_SH
-cat > "$BIN_DIR/ctx-branch" <<EOF_SH
-#!/usr/bin/env bash
-exec "$BIN_DIR/ctx" branch "$@"
-EOF_SH
-cat > "$BIN_DIR/ctx-web" <<EOF_SH
-#!/usr/bin/env bash
-exec "$BIN_DIR/ctx" web "$@"
-EOF_SH
-chmod +x "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-search" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start" "$BIN_DIR/ctx-delete" "$BIN_DIR/ctx-branch" "$BIN_DIR/ctx-web"
+rm -f \
+  "$BIN_DIR/ctx-list" \
+  "$BIN_DIR/ctx-search" \
+  "$BIN_DIR/ctx-resume" \
+  "$BIN_DIR/ctx-start" \
+  "$BIN_DIR/ctx-delete" \
+  "$BIN_DIR/ctx-branch" \
+  "$BIN_DIR/ctx-web"
 
 if [[ "${CTX_INSTALL_SKILLS:-1}" != "0" ]]; then
   echo "Installing self-contained Claude/Codex skills ..."
@@ -111,14 +89,6 @@ Try:
   ctx delete my-workstream
   ctx branch from-workstream to-workstream
   ctx web --open
-  # Compatibility aliases also work:
-  ctx-list
-  ctx-search my-query
-  ctx-start my-workstream --pull
-  ctx-resume my-workstream
-  ctx-delete my-workstream
-  ctx-branch from-workstream to-workstream
-  ctx-web --open
   python3 -m contextfun --help
 
 Notes:

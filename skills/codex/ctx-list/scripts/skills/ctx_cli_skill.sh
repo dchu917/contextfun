@@ -14,10 +14,8 @@ for _ in 1 2 3 4 5 6 7 8; do
   SEARCH="$CAND"
 done
 
-if [[ -x "$SHIM_DIR/ctx-list" ]]; then
-  exec "$SHIM_DIR/ctx-list"
-elif command -v ctx-list >/dev/null 2>&1; then
-  exec ctx-list
+if [[ -x "$SHIM_DIR/ctx" ]]; then
+  exec "$SHIM_DIR/ctx" list
 elif command -v ctx >/dev/null 2>&1; then
   exec ctx list
 elif [[ -n "$REPO" ]]; then

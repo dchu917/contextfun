@@ -12,7 +12,7 @@ usage() {
 Usage: $0 [--global]
 
 Without flags, sets up a project-local ContextFun store under ./.contextfun, writes ./ctx.env,
-installs repo-backed ctx-* shims, and links skills into ~/.claude/skills and ~/.codex/skills.
+installs the repo-backed ctx shim, and links skills into ~/.claude/skills and ~/.codex/skills.
 Use --global to install a shared CLI into ~/.contextfun (requires PATH update; see output).
 EOF
 }
@@ -55,7 +55,7 @@ export CONTEXTFUN_DB="$DB_LOCAL"
 alias ctx-local='python3 "$ROOT_DIR/scripts/ctx_cmd.py"'
 EOF
 
-  echo "[3/5] Installing repo-backed ctx-* shims into ~/.contextfun/bin"
+  echo "[3/5] Installing the repo-backed ctx shim into ~/.contextfun/bin"
   bash "$ROOT_DIR/scripts/install_shims.sh"
 
   echo "[4/5] Linking local skills into ~/.claude/skills and ~/.codex/skills"
@@ -76,8 +76,7 @@ EOF
   - Shortcut: `/branch source-stream target-stream`
 - Codex:
   - Restart Codex, then use `ctx`, `ctx list`, `ctx start my-stream --pull`, `ctx resume my-stream`, `ctx rename better-name`, `ctx delete my-stream`, `ctx branch source-stream target-stream`
-  - Compatibility aliases: `ctx-list`, `ctx-search`, `ctx-start`, `ctx-resume`, `ctx-delete`, `ctx-branch`, `ctx-web`
-  - Codex does not currently support custom repo-defined slash commands like `/ctx-list`.
+  - Codex does not currently support custom repo-defined slash commands like `/ctx list`.
 - Optional automation helpers for paste/status workflows:
   - `python3 scripts/skills/ctx_resume_skill.py --name "my-stream" --paste`
   - `python3 scripts/skills/ctx_start_skill.py --name "my-stream" --agent codex --pull --paste`

@@ -14,10 +14,8 @@ for _ in 1 2 3 4 5 6 7 8; do
   SEARCH="$CAND"
 done
 
-if [[ -x "$SHIM_DIR/ctx-branch" ]]; then
-  exec "$SHIM_DIR/ctx-branch" "$@"
-elif command -v ctx-branch >/dev/null 2>&1; then
-  exec ctx-branch "$@"
+if [[ -x "$SHIM_DIR/ctx" ]]; then
+  exec "$SHIM_DIR/ctx" branch "$@" --format markdown
 elif command -v ctx >/dev/null 2>&1; then
   exec ctx branch "$@" --format markdown
 elif [[ -n "$REPO" ]]; then

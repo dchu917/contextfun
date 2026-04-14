@@ -33,10 +33,8 @@ if [[ -n "$NAME" ]]; then
   CMD+=("$NAME")
 fi
 
-if [[ -x "$SHIM_DIR/ctx-start" ]]; then
-  exec "$SHIM_DIR/ctx-start" "${CMD[@]}"
-elif command -v ctx-start >/dev/null 2>&1; then
-  exec ctx-start "${CMD[@]}"
+if [[ -x "$SHIM_DIR/ctx" ]]; then
+  exec "$SHIM_DIR/ctx" start "${CMD[@]}"
 elif command -v ctx >/dev/null 2>&1; then
   exec ctx start "${CMD[@]}"
 elif [[ -n "$REPO" ]]; then
