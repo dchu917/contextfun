@@ -14,8 +14,11 @@ import re
 from typing import List, Dict, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+IMPORT_ROOT = ROOT
+if not (IMPORT_ROOT / "contextfun").exists() and (ROOT / "lib" / "contextfun").exists():
+    IMPORT_ROOT = ROOT / "lib"
+if str(IMPORT_ROOT) not in sys.path:
+    sys.path.insert(0, str(IMPORT_ROOT))
 
 from contextfun.cli import (
     ClosingConnection,

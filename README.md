@@ -86,32 +86,208 @@ ctx resume feature-audit
 ctx branch feature-audit feature-audit-v2
 ```
 
-## Quick Start
+## Install
 
-After cloning the repo, run:
+There are several supported ways to install `ctx`, depending on whether you want a repo-backed local setup, a shared global install, or a skill/bootstrap-first flow.
+
+### 1. Clone the repo and do the standard project-local setup
 
 ```bash
+git clone https://github.com/dchu917/ctx.git
+cd ctx
 ./setup.sh
 ```
 
-This is the primary install path.
+This is the main development-friendly install path.
 
-It does the local setup:
+It does the following:
 
 - creates `./.contextfun/context.db`
 - writes `./ctx.env`
-- installs `ctx` into `~/.contextfun/bin`
+- installs a repo-backed `ctx` shim into `~/.contextfun/bin`
 - links local skills into `~/.claude/skills` and `~/.codex/skills`
 
-Then restart your client.
+Use this when:
 
-If you already use `skills.sh` and want the experimental skill install in one line:
+- you want the repo checked out locally
+- you want `ctx` to use a project-local DB by default
+- you are developing or editing the repo itself
+
+### 2. Clone the repo and install a shared global setup from that clone
+
+```bash
+git clone https://github.com/dchu917/ctx.git
+cd ctx
+./setup.sh --global
+```
+
+This runs the same quickstart entrypoint, but installs the pinned global release into `~/.contextfun` instead of wiring the current clone as the live runtime.
+
+Use this when:
+
+- you already cloned the repo
+- you want one shared `ctx` install across projects
+- you want bundled self-contained skills instead of repo symlinks
+
+### 3. Install globally without cloning first
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/install.sh | bash
+```
+
+This installs a pinned tagged release into `~/.contextfun`, including:
+
+- `~/.contextfun/bin/ctx`
+- `~/.contextfun/lib/contextfun`
+- `~/.contextfun/context.db`
+- self-contained Claude/Codex skills linked from `~/.contextfun/skills`
+
+Optional installer flags:
+
+- `CTX_VERSION=<tag>` installs a different tagged release
+- `CTX_INSTALL_SKILLS=0` skips installing Claude/Codex skills
+
+Use this when:
+
+- you want the simplest global install
+- you do not need a repo clone first
+
+### 4. Install the bootstrap skill first with `skills.sh`
 
 ```bash
 npx skills add https://github.com/dchu917/ctx --skill ctx -y -g
 ```
 
-That installs the `ctx` skill instructions. You should still install the `ctx` CLI itself with `./setup.sh` after cloning, or use the global installer under `Other Install Options`.
+This installs the `ctx` bootstrap skill first, not the CLI binary directly.
+
+After that, the bundled `skills/ctx/scripts/ctx.sh` wrapper can:
+
+- run `ctx install`
+- or auto-install the global CLI into `~/.contextfun` on first `ctx ...` use and then retry the requested command
+
+Use this when:
+
+- you already use `skills.sh`
+- you want a skill-first install path for an agent environment
+
+### 5. Bootstrap an agent shell without a full manual clone flow
+
+Global shell bootstrap:
+
+```bash
+source <(curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/agent_bootstrap.sh)
+```
+
+Project-local shell bootstrap:
+
+```bash
+source <(curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/agent_setup_local_ctx.sh)
+```
+
+These are best for Claude Code or Codex terminals.
+
+Notes:
+
+- `agent_bootstrap.sh` does not install `ctx`; it only exports `PATH` and `CONTEXTFUN_DB` for an existing global install in `~/.contextfun`
+- `agent_setup_local_ctx.sh` downloads a pinned release into `./ctx`, initializes `./ctx/context.db`, and exports that runtime into the current shell
+- both are shell/bootstrap helpers, not replacements for a normal repo clone if you want to edit the project itself
+
+### 6. Advanced manual wiring after cloning
+
+If you want to install only specific pieces from a clone:
+
+Repo-backed `ctx` shim:
+
+```bash
+bash scripts/install_shims.sh
+```
+
+Skill links only:
+
+```bash
+bash scripts/install_skills.sh
+```
+
+Override skill directories if needed:
+
+```bash
+CODEX_SKILLS_DIR=/custom/codex/skills \
+CLAUDE_SKILLS_DIR=/custom/claude/skills \
+bash scripts/install_skills.sh
+```
+
+Use this when:
+
+- you want to wire the shim separately from the DB setup
+- you only want the skill links
+- you need custom skill directories
+
+## Uninstall / Remove
+
+There is no dedicated uninstall script yet. Removal is manual and depends on how you installed `ctx`.
+
+### Remove a standard repo-backed setup from `./setup.sh`
+
+From a clone of this repo:
+
+```bash
+./uninstall.sh
+```
+
+This removes:
+
+- `./.contextfun`
+- `./ctx.env`
+- linked skills that point at this repo
+- `~/.contextfun/bin/ctx` if it is the repo-backed shim for this clone
+
+If you no longer need the clone itself, delete the repo directory too.
+
+### Remove a global install from `./setup.sh --global`, the curl installer, or skill bootstrap
+
+From a clone of this repo:
+
+```bash
+./uninstall.sh --global
+```
+
+This removes:
+
+- `~/.contextfun`
+- linked skills that point at `~/.contextfun/skills`
+- matching `PATH` / `CONTEXTFUN_DB` lines from `~/.zshrc`, `~/.bashrc`, and `~/.profile`
+
+### Remove a `skills.sh`-only bootstrap install
+
+If you only installed the bootstrap skill and never let it install the CLI, remove that skill from your skill manager or delete its installed `ctx` skill folder from your managed skills directory.
+
+If the bootstrap skill already installed the CLI into `~/.contextfun`, also follow the global uninstall steps above.
+
+### Remove agent bootstrap state
+
+If you used `agent_bootstrap.sh`, open a new shell or unset the exported variables:
+
+```bash
+unset CONTEXTFUN_DB
+```
+
+If you used `agent_setup_local_ctx.sh`, remove the downloaded local runtime from a clone:
+
+```bash
+./uninstall.sh --agent-local
+```
+
+If needed, also run:
+
+```bash
+unset CONTEXTFUN_DB
+```
+
+For one-shot cleanup of everything from a clone, use:
+
+```bash
+./uninstall.sh --all
+```
 
 ## Experimental: OpenCode And Cursor
 
@@ -299,19 +475,16 @@ Experimental command surfaces:
 - Cursor: `/ctx`, with the same subcommand shape as above
 - These are included as project-local experimental command files. The stable interface remains the plain `ctx ...` command family.
 
-## Experimental: skills.sh
+## skills.sh Notes
 
-Easy install:
+For the `skills.sh` install path, see `Install` above.
 
-```bash
-npx skills add https://github.com/dchu917/ctx --skill ctx -y -g
-```
+The short version:
 
-Notes:
-
-- this installs the `ctx` skill instructions, not the `ctx` CLI binary
-- users should still install the CLI with `./setup.sh` after cloning, or with the global installer under `Other Install Options`
 - the published skill name is `ctx`
+- `skills add` installs the bootstrap skill first, not the CLI binary directly
+- on first use, the bundled `skills/ctx/scripts/ctx.sh` wrapper can bootstrap the global install into `~/.contextfun` and then retry the requested command
+- if you already have a clone and want a project-local setup instead, use `./setup.sh`
 - this repo is structured so `skills add` can install `ctx` directly from GitHub, even if it is not yet visibly listed on the `skills.sh` website
 
 ## Load Output And Compression
@@ -390,22 +563,16 @@ Branching behavior:
 - the target starts detached and does not inherit the source's future transcript pulls
 - if the current Claude/Codex conversation is already owned by the source workstream, resuming the branch stays detached instead of reusing that transcript
 - future work in the target is independent
-## Other Install Options
+## Installer Notes
 
-If you want a global install without cloning first, there is also a curl installer:
+For the supported install paths, see `Install` above.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/install.sh | bash
-```
+The global curl installer:
 
-That installs a pinned tagged release into `~/.contextfun`, including self-contained Claude/Codex skills that no longer depend on a live repo checkout.
-
-Notes:
-
-- set `CTX_VERSION=<tag>` if you want a different tagged release
-- set `CTX_INSTALL_SKILLS=0` if you want to skip installing Claude/Codex skills
-
-Use that only if you specifically want a global `ctx` install in `~/.contextfun`.
+- installs a pinned tagged release into `~/.contextfun`
+- includes self-contained Claude/Codex skills that no longer depend on a live repo checkout
+- supports `CTX_VERSION=<tag>` for a different tagged release
+- supports `CTX_INSTALL_SKILLS=0` to skip installing Claude/Codex skills
 
 ## Smoke Tests
 
@@ -425,19 +592,7 @@ This covers the current release smoke path:
 
 ## Agent Bootstrap
 
-If you want a shell to automatically use the shared global DB and PATH:
-
-Global bootstrap:
-
-```bash
-source <(curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/agent_bootstrap.sh)
-```
-
-Project-local bootstrap:
-
-```bash
-source <(curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/agent_setup_local_ctx.sh)
-```
+For the shell bootstrap commands, see `Install` above.
 
 Optional per-agent isolation:
 
@@ -517,9 +672,11 @@ python3 scripts/skills/ctx_resume_skill.py --name "my-workstream" --paste
 python3 scripts/skills/ctx_start_skill.py --name "my-workstream" --agent codex --pull --paste
 ```
 
-## Skill Installation
+## Manual Skill Installation
 
-Local symlink install:
+For the full install matrix, see `Install` above.
+
+If you only want to link skills from a clone:
 
 ```bash
 bash scripts/install_skills.sh

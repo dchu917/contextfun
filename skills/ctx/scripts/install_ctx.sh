@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ctx one-line installer
-# Installs a pinned ctx release to ~/.contextfun and sets PATH + CONTEXTFUN_DB
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd -P)
+SKILL_DIR=$(cd "$SCRIPT_DIR/.." && pwd -P)
+REPO_ROOT=""
+if REPO_ROOT=$(cd "$SKILL_DIR/../.." 2>/dev/null && pwd -P); then
+  if [[ -f "$REPO_ROOT/scripts/install.sh" && -d "$REPO_ROOT/contextfun" ]]; then
+    exec bash "$REPO_ROOT/scripts/install.sh" "$@"
+  fi
+fi
 
 REPO_URL="https://github.com/dchu917/ctx"
 DEFAULT_REF="v0.1.1"
@@ -101,11 +107,9 @@ Try:
   ctx delete my-workstream
   ctx branch from-workstream to-workstream
   ctx web --open
-  python3 -m contextfun --help
 
 Notes:
-  - This installer uses the pinned release ref: $CTX_REF
+  - This bootstrap installer uses the pinned release ref: $CTX_REF
   - Set CTX_VERSION=<tag> to install a different tagged release.
   - Set CTX_INSTALL_SKILLS=0 to skip installing Claude/Codex skills.
-  - For Claude/Codex terminals, use the agent bootstrap one-liner from README.
 EOF

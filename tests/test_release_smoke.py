@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import shutil
 from pathlib import Path
 from unittest import mock
 
@@ -15,7 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 CTX_CMD = ROOT / "scripts" / "ctx_cmd.py"
 INSTALL_SH = ROOT / "scripts" / "install.sh"
 INSTALL_SKILLS_SH = ROOT / "scripts" / "install_skills.sh"
+UNINSTALL_SH = ROOT / "scripts" / "uninstall.sh"
+UNINSTALL_SKILLS_SH = ROOT / "scripts" / "uninstall_skills.sh"
 AGENT_SETUP_LOCAL_SH = ROOT / "scripts" / "agent_setup_local_ctx.sh"
+SKILL_INSTALL_SH = ROOT / "skills" / "ctx" / "scripts" / "install_ctx.sh"
+SKILL_WRAPPER_SH = ROOT / "skills" / "ctx" / "scripts" / "ctx.sh"
 CLI_PY = ROOT / "contextfun" / "cli.py"
 WEB_PY = ROOT / "contextfun" / "web.py"
 
@@ -45,6 +50,10 @@ class CtxReleaseSmokeTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmpdir.cleanup()
+
+    def write_executable(self, path: Path, text: str) -> None:
+        path.write_text(text, encoding="utf-8")
+        path.chmod(0o755)
 
     def run_ctx(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -216,17 +225,27 @@ class CtxReleaseSmokeTests(unittest.TestCase):
 
     def test_install_script_is_release_pinned_and_installs_skills(self):
         text = INSTALL_SH.read_text(encoding="utf-8")
-        self.assertIn('DEFAULT_REF="v0.1.0"', text)
+        self.assertIn('DEFAULT_REF="v0.1.1"', text)
         self.assertIn('archive/refs/tags/', text)
         self.assertIn('rsync -a "$SRC_DIR/skills/" "$SKILLS_DIR/"', text)
         self.assertIn('install_skills.sh', text)
         self.assertIn('CTX_INSTALL_SKILLS', text)
-        self.assertIn('install -m 0755 "$SRC_DIR/scripts/ctx_cmd.py" "$BIN_DIR/ctx"', text)
+        self.assertIn('install -m 0755 "$SRC_DIR/scripts/ctx_cmd.py" "$BIN_DIR/ctx.py"', text)
+        self.assertIn('exec python3 "$BIN_DIR/ctx.py" "$@"', text)
         self.assertNotIn("Compatibility aliases also work:", text)
+
+    def test_skill_bootstrap_installer_is_release_pinned_and_installs_skills(self):
+        text = SKILL_INSTALL_SH.read_text(encoding="utf-8")
+        self.assertIn('DEFAULT_REF="v0.1.1"', text)
+        self.assertIn('archive/refs/tags/', text)
+        self.assertIn('install_skills.sh', text)
+        self.assertIn('CTX_INSTALL_SKILLS', text)
+        self.assertIn('install -m 0755 "$SRC_DIR/scripts/ctx_cmd.py" "$BIN_DIR/ctx.py"', text)
+        self.assertIn('exec python3 "$BIN_DIR/ctx.py" "$@"', text)
 
     def test_local_agent_setup_script_is_release_pinned(self):
         text = AGENT_SETUP_LOCAL_SH.read_text(encoding="utf-8")
-        self.assertIn('DEFAULT_REF="v0.1.0"', text)
+        self.assertIn('DEFAULT_REF="v0.1.1"', text)
         self.assertIn('archive/refs/tags/', text)
         self.assertIn("Downloading ctx into ./ctx", text)
 
@@ -263,12 +282,232 @@ class CtxReleaseSmokeTests(unittest.TestCase):
             self.assertTrue((Path(codex_dir) / "ctx-start" / "SKILL.md").exists())
             self.assertTrue((Path(claude_dir) / "ctx" / "SKILL.md").exists())
 
+    def test_uninstall_skills_removes_matching_links_only(self):
+        with tempfile.TemporaryDirectory() as skills_tmp, tempfile.TemporaryDirectory() as codex_tmp, tempfile.TemporaryDirectory() as claude_tmp:
+            skills_root = Path(skills_tmp)
+            codex_dir = Path(codex_tmp)
+            claude_dir = Path(claude_tmp)
+            codex_skill = skills_root / "codex" / "ctx-start"
+            claude_skill = skills_root / "claude" / "ctx"
+            codex_skill.mkdir(parents=True, exist_ok=True)
+            claude_skill.mkdir(parents=True, exist_ok=True)
+            (codex_skill / "SKILL.md").write_text("codex", encoding="utf-8")
+            (claude_skill / "SKILL.md").write_text("claude", encoding="utf-8")
+
+            (codex_dir / "ctx-start").symlink_to(codex_skill)
+            (claude_dir / "ctx").symlink_to(claude_skill)
+
+            other_root = skills_root / "other"
+            other_root.mkdir(parents=True, exist_ok=True)
+            (other_root / "SKILL.md").write_text("other", encoding="utf-8")
+            (codex_dir / "keep-me").symlink_to(other_root)
+
+            proc = subprocess.run(
+                [
+                    "bash",
+                    str(UNINSTALL_SKILLS_SH),
+                    "--skills-root",
+                    str(skills_root),
+                    "--codex-dir",
+                    str(codex_dir),
+                    "--claude-dir",
+                    str(claude_dir),
+                ],
+                cwd=str(ROOT),
+                env=self.env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertFalse((codex_dir / "ctx-start").exists())
+            self.assertFalse((claude_dir / "ctx").exists())
+            self.assertTrue((codex_dir / "keep-me").exists())
+
+    def test_uninstall_script_removes_global_install_and_rc_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / "home"
+            codex_dir = tmp_path / "codex-skills"
+            claude_dir = tmp_path / "claude-skills"
+            prefix = home / ".contextfun"
+            (prefix / "bin").mkdir(parents=True, exist_ok=True)
+            (prefix / "lib" / "contextfun").mkdir(parents=True, exist_ok=True)
+            (prefix / "skills" / "codex" / "ctx-start").mkdir(parents=True, exist_ok=True)
+            (prefix / "skills" / "claude" / "ctx").mkdir(parents=True, exist_ok=True)
+            (prefix / "skills" / "codex" / "ctx-start" / "SKILL.md").write_text("codex", encoding="utf-8")
+            (prefix / "skills" / "claude" / "ctx" / "SKILL.md").write_text("claude", encoding="utf-8")
+            codex_dir.mkdir(parents=True, exist_ok=True)
+            claude_dir.mkdir(parents=True, exist_ok=True)
+            (codex_dir / "ctx-start").symlink_to(prefix / "skills" / "codex" / "ctx-start")
+            (claude_dir / "ctx").symlink_to(prefix / "skills" / "claude" / "ctx")
+            (home / ".zshrc").write_text(
+                "\n".join(
+                    [
+                        'export CONTEXTFUN_DB="' + str(prefix / "context.db") + '"',
+                        'export PATH="' + str(prefix / "bin") + ':$PATH"',
+                        "export KEEP_ME=1",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            env = self.env.copy()
+            env["HOME"] = str(home)
+            env["CODEX_SKILLS_DIR"] = str(codex_dir)
+            env["CLAUDE_SKILLS_DIR"] = str(claude_dir)
+            proc = subprocess.run(
+                ["bash", str(UNINSTALL_SH), "--global"],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertFalse(prefix.exists())
+            self.assertFalse((codex_dir / "ctx-start").exists())
+            self.assertFalse((claude_dir / "ctx").exists())
+            zshrc_text = (home / ".zshrc").read_text(encoding="utf-8")
+            self.assertIn("export KEEP_ME=1", zshrc_text)
+            self.assertNotIn("CONTEXTFUN_DB", zshrc_text)
+            self.assertNotIn(str(prefix / "bin"), zshrc_text)
+
+    def test_uninstall_script_removes_repo_local_setup_from_custom_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo_root = tmp_path / "repo"
+            home = tmp_path / "home"
+            codex_dir = tmp_path / "codex-skills"
+            claude_dir = tmp_path / "claude-skills"
+            (repo_root / ".contextfun").mkdir(parents=True, exist_ok=True)
+            (repo_root / ".contextfun" / "context.db").write_text("", encoding="utf-8")
+            (repo_root / "ctx.env").write_text("CTX", encoding="utf-8")
+            (repo_root / "skills" / "codex" / "ctx-start").mkdir(parents=True, exist_ok=True)
+            (repo_root / "skills" / "claude" / "ctx").mkdir(parents=True, exist_ok=True)
+            (repo_root / "skills" / "codex" / "ctx-start" / "SKILL.md").write_text("codex", encoding="utf-8")
+            (repo_root / "skills" / "claude" / "ctx" / "SKILL.md").write_text("claude", encoding="utf-8")
+            (home / ".contextfun" / "bin").mkdir(parents=True, exist_ok=True)
+            self.write_executable(
+                home / ".contextfun" / "bin" / "ctx",
+                f"""#!/usr/bin/env bash
+set -euo pipefail
+ROOT_DIR="{repo_root}"
+exec python3 "$ROOT_DIR/scripts/ctx_cmd.py" "$@"
+""",
+            )
+            codex_dir.mkdir(parents=True, exist_ok=True)
+            claude_dir.mkdir(parents=True, exist_ok=True)
+            (codex_dir / "ctx-start").symlink_to(repo_root / "skills" / "codex" / "ctx-start")
+            (claude_dir / "ctx").symlink_to(repo_root / "skills" / "claude" / "ctx")
+
+            env = self.env.copy()
+            env["HOME"] = str(home)
+            env["CODEX_SKILLS_DIR"] = str(codex_dir)
+            env["CLAUDE_SKILLS_DIR"] = str(claude_dir)
+            proc = subprocess.run(
+                ["bash", str(UNINSTALL_SH), "--root", str(repo_root)],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertFalse((repo_root / ".contextfun").exists())
+            self.assertFalse((repo_root / "ctx.env").exists())
+            self.assertFalse((home / ".contextfun" / "bin" / "ctx").exists())
+            self.assertFalse((codex_dir / "ctx-start").exists())
+            self.assertFalse((claude_dir / "ctx").exists())
+
+    def test_uninstall_script_removes_agent_local_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo_root = tmp_path / "repo"
+            (repo_root / "ctx" / "bin").mkdir(parents=True, exist_ok=True)
+            (repo_root / "ctx" / "bin" / "ctx").write_text("stub", encoding="utf-8")
+
+            proc = subprocess.run(
+                ["bash", str(UNINSTALL_SH), "--agent-local", "--root", str(repo_root)],
+                cwd=str(ROOT),
+                env=self.env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertFalse((repo_root / "ctx").exists())
+
     def test_skills_sh_skill_exists(self):
         skill_file = ROOT / "skills" / "ctx" / "SKILL.md"
         self.assertTrue(skill_file.exists())
         text = skill_file.read_text(encoding="utf-8")
         self.assertIn("name: ctx", text)
+        self.assertIn("ctx install", text)
         self.assertIn("single `ctx` entrypoint", text)
+
+    def test_skills_sh_wrapper_bootstraps_when_ctx_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / "home"
+            home.mkdir()
+            wrapper = tmp_path / "ctx.sh"
+            installer = tmp_path / "install_ctx.sh"
+            self.write_executable(wrapper, SKILL_WRAPPER_SH.read_text(encoding="utf-8"))
+            self.write_executable(
+                installer,
+                """#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "$HOME/.contextfun/bin"
+cat > "$HOME/.contextfun/bin/ctx" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'CTX_STUB:%s\\n' "$*"
+EOF
+chmod +x "$HOME/.contextfun/bin/ctx"
+""",
+            )
+            env = self.env.copy()
+            env["HOME"] = str(home)
+            env["PATH"] = "/usr/bin:/bin"
+            proc = subprocess.run(
+                ["bash", str(wrapper), "list", "--this-repo"],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("CTX_STUB:list --this-repo", proc.stdout)
+            self.assertIn("Bootstrapping the bundled installer first", proc.stderr)
+
+    def test_skills_sh_wrapper_install_command_bootstraps_without_dispatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / "home"
+            home.mkdir()
+            wrapper = tmp_path / "ctx.sh"
+            installer = tmp_path / "install_ctx.sh"
+            self.write_executable(wrapper, SKILL_WRAPPER_SH.read_text(encoding="utf-8"))
+            self.write_executable(
+                installer,
+                """#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "$HOME"
+printf 'installed\\n' > "$HOME/install-ran.txt"
+""",
+            )
+            env = self.env.copy()
+            env["HOME"] = str(home)
+            env["PATH"] = "/usr/bin:/bin"
+            proc = subprocess.run(
+                ["bash", str(wrapper), "install"],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout, "")
+            self.assertEqual(proc.stderr, "")
+            self.assertEqual((home / "install-ran.txt").read_text(encoding="utf-8").strip(), "installed")
 
     def test_system_python39_can_import_cli_module(self):
         py39 = Path("/usr/bin/python3")
@@ -303,6 +542,34 @@ class CtxReleaseSmokeTests(unittest.TestCase):
         ctx_cmd._augment_pythonpath(env)
         pythonpath = env.get("PYTHONPATH", "")
         self.assertIn(str(ROOT), pythonpath)
+
+    def test_installed_ctx_cmd_imports_from_prefix_lib_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = Path(tmp)
+            bin_dir = prefix / "bin"
+            lib_dir = prefix / "lib"
+            db_path = prefix / "context.db"
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(CTX_CMD, bin_dir / "ctx.py")
+            shutil.copytree(ROOT / "contextfun", lib_dir / "contextfun")
+
+            init_proc = subprocess.run(
+                [sys.executable, "-m", "contextfun", "--db", str(db_path), "init"],
+                cwd=str(ROOT),
+                env={**self.env, "PYTHONPATH": str(lib_dir)},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(init_proc.returncode, 0, init_proc.stderr)
+
+            proc = subprocess.run(
+                [sys.executable, str(bin_dir / "ctx.py"), "list"],
+                cwd=str(prefix),
+                env={**self.env, "CONTEXTFUN_DB": str(db_path)},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_pull_feedback_mentions_clipboard_fallback(self):
         ctx_cmd = _load_ctx_cmd_module()

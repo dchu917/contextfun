@@ -6,7 +6,7 @@ set -euo pipefail
 #   source <(curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/agent_setup_local_ctx.sh)
 
 REPO_URL="https://github.com/dchu917/ctx"
-DEFAULT_REF="v0.1.0"
+DEFAULT_REF="v0.1.1"
 CTX_REF="${CTX_VERSION:-$DEFAULT_REF}"
 if [[ "$CTX_REF" == "main" ]]; then
   ARCHIVE_URL="$REPO_URL/archive/refs/heads/main.tar.gz"
@@ -27,9 +27,20 @@ if [[ ! -d "$LIB_DIR/contextfun" ]]; then
   trap 'rm -rf "$TMPDIR"' EXIT
   echo "Downloading ctx into ./ctx (ref: $CTX_REF) ..."
   curl -fsSL "$ARCHIVE_URL" | tar xz -C "$TMPDIR"
-  SRC_DIR=$(find "$TMPDIR" -maxdepth 1 -type d -name 'contextfun-*' | head -n1)
+  SRC_DIR=$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -type d | head -n1)
   cp -R "$SRC_DIR/contextfun" "$LIB_DIR/"
-  install -m 0755 "$SRC_DIR/scripts/ctx_cmd.py" "$BIN_DIR/ctx"
+  install -m 0755 "$SRC_DIR/scripts/ctx_cmd.py" "$BIN_DIR/ctx.py"
+  cat > "$BIN_DIR/ctx" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+PREFIX="__PREFIX__"
+LIB_DIR="$PREFIX/lib"
+BIN_DIR="$PREFIX/bin"
+export PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 "$BIN_DIR/ctx.py" "$@"
+SH
+  perl -0pi -e 's|__PREFIX__|'"$PREFIX"'|g' "$BIN_DIR/ctx"
+  chmod +x "$BIN_DIR/ctx"
 fi
 
 # Initialize DB if missing
