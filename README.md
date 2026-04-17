@@ -456,11 +456,13 @@ Repo awareness:
 Load curation:
 
 - use the browser detail page to pin, exclude, or delete specific saved entries
+- loaded `ctx start` and `ctx resume` output now shows recent entry ids like `E123` plus direct inline deletion examples
 - use `ctx curate <workstream>` for a terminal UI that lets you scroll saved entries and:
   - `p` pin an entry so it always loads
   - `x` exclude an entry from future loads
   - `a` restore default loading
   - `d` delete the saved entry entirely
+- if you already know the saved entry ids you want to remove, use `ctx delete --entry-id E123` or `ctx delete --entry-id E123 --entry-id E122`
 - pinned entries are always included in future packs, even in compressed mode
 - excluded entries remain saved and searchable, but are omitted from future packs
 - if you want the same control from the core CLI, use:
@@ -643,6 +645,8 @@ ctx rename better-name --from old-name
 ctx delete my-stream
 ctx curate my-stream
 ctx delete --session-id 123
+ctx delete --entry-id E123
+ctx delete --entry-id E123 --entry-id E122
 ctx branch old-stream new-stream
 ctx web --open
 ```

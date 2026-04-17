@@ -597,6 +597,16 @@ printf 'installed\\n' > "$HOME/install-ran.txt"
             )
         self.assertEqual(note, "Pull capture: frontmost copy failed; existing clipboard text was ingested instead.")
 
+    def test_curation_delete_confirmation_requires_double_d(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        self.assertEqual(
+            ctx_cmd._curation_delete_prompt(42),
+            "Confirm delete entry 42: press d again to delete, any other key to cancel.",
+        )
+        self.assertTrue(ctx_cmd._curation_delete_confirmed(ord("d")))
+        self.assertTrue(ctx_cmd._curation_delete_confirmed(ord("D")))
+        self.assertFalse(ctx_cmd._curation_delete_confirmed(ord("y")))
+
     def test_curation_entries_exposes_saved_entries(self):
         self.assertEqual(self.run_ctx("start", "curate-demo", "--no-auto-pull").returncode, 0)
         self.assertEqual(self.run_ctx("note", "Keep this memory available for curation.").returncode, 0)
@@ -607,6 +617,60 @@ printf 'installed\\n' > "$HOME/install-ran.txt"
             entries = ctx_cmd._curation_entries(int(ws["id"]))
         self.assertTrue(entries)
         self.assertIn("Keep this memory available for curation.", entries[0]["content"])
+
+    def test_delete_entry_ids_removes_saved_entries_from_ctx_memory(self):
+        self.assertEqual(self.run_ctx("start", "inline-delete-demo", "--no-auto-pull").returncode, 0)
+        self.assertEqual(self.run_ctx("note", "Delete this note from ctx memory.").returncode, 0)
+        self.assertEqual(self.run_ctx("note", "Delete this follow-up note too.").returncode, 0)
+        self.assertEqual(self.run_ctx("decision", "Keep this decision after inline delete.").returncode, 0)
+
+        ctx_cmd = _load_ctx_cmd_module()
+        with mock.patch.dict(os.environ, self.env, clear=False):
+            ws = ctx_cmd.lookup_workstream("inline-delete-demo")
+            self.assertIsNotNone(ws)
+            entries = ctx_cmd._curation_entries(int(ws["id"]))
+
+        delete_ids = [
+            item["id"]
+            for item in entries
+            if item["content"] in {"Delete this note from ctx memory.", "Delete this follow-up note too."}
+        ]
+        keep_entry = next(item for item in entries if item["content"] == "Keep this decision after inline delete.")
+
+        deleted = self.run_ctx("delete", "--entry-id", f"E{delete_ids[0]},{delete_ids[1]}")
+        self.assertEqual(deleted.returncode, 0, deleted.stderr)
+        self.assertIn(f"Deleted entry {delete_ids[0]}", deleted.stdout)
+        self.assertIn(f"Deleted entry {delete_ids[1]}", deleted.stdout)
+
+        resumed = self.run_ctx("resume", "inline-delete-demo", "--no-auto-pull", "--no-compress")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertNotIn("Delete this note from ctx memory.", resumed.stdout)
+        self.assertNotIn("Delete this follow-up note too.", resumed.stdout)
+        self.assertIn("Keep this decision after inline delete.", resumed.stdout)
+
+        with mock.patch.dict(os.environ, self.env, clear=False):
+            entries_after = ctx_cmd._curation_entries(int(ws["id"]))
+        remaining_ids = {item["id"] for item in entries_after}
+        self.assertNotIn(delete_ids[0], remaining_ids)
+        self.assertNotIn(delete_ids[1], remaining_ids)
+        self.assertIn(keep_entry["id"], remaining_ids)
+
+    def test_resume_output_surfaces_inline_entry_delete_commands(self):
+        self.assertEqual(self.run_ctx("start", "inline-delete-hint-demo", "--no-auto-pull").returncode, 0)
+        self.assertEqual(self.run_ctx("note", "Prune this line from ctx memory if it becomes stale.").returncode, 0)
+
+        ctx_cmd = _load_ctx_cmd_module()
+        with mock.patch.dict(os.environ, self.env, clear=False):
+            ws = ctx_cmd.lookup_workstream("inline-delete-hint-demo")
+            self.assertIsNotNone(ws)
+            entry = ctx_cmd._curation_entries(int(ws["id"]))[0]
+
+        resumed = self.run_ctx("resume", "inline-delete-hint-demo", "--no-auto-pull", "--no-compress")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertIn(f"E{entry['id']} S", resumed.stdout)
+        self.assertIn(f"ctx delete --entry-id E{entry['id']}", resumed.stdout)
+        self.assertIn("ctx curate inline-delete-hint-demo", resumed.stdout)
+        self.assertIn("These actions change ctx memory only", resumed.stdout)
 
     def test_list_hides_ephemeral_temp_workspaces_by_default(self):
         self.assertEqual(self.run_ctx("start", "root-demo", "--no-auto-pull").returncode, 0)
