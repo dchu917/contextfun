@@ -413,6 +413,30 @@ def _curation_delete_entry(entry_id: int) -> str:
     return f"Deleted entry {entry_id} ({entry_type})"
 
 
+def _parse_entry_id_args(raw_values: Optional[List[str]]) -> List[int]:
+    parsed: List[int] = []
+    seen: set[int] = set()
+    for raw in raw_values or []:
+        for piece in str(raw).split(","):
+            token = piece.strip()
+            if not token:
+                continue
+            if token.lower().startswith("e"):
+                token = token[1:]
+            if not token.isdigit():
+                print(f"Invalid entry id '{piece.strip()}'. Use values like 123 or E123.", file=sys.stderr)
+                raise SystemExit(2)
+            entry_id = int(token)
+            if entry_id <= 0:
+                print(f"Invalid entry id '{piece.strip()}'. Entry ids must be positive integers.", file=sys.stderr)
+                raise SystemExit(2)
+            if entry_id in seen:
+                continue
+            seen.add(entry_id)
+            parsed.append(entry_id)
+    return parsed
+
+
 def _launch_curation_ui(workstream: Dict[str, object]) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print("Interactive curation requires a real terminal. Use `ctx web --open` if you are in a non-interactive shell.", file=sys.stderr)
@@ -1105,6 +1129,32 @@ def _recent_entry_rows(workstream_id: int, limit: int = 4) -> List[sqlite3.Row]:
     return meaningful[:limit] if meaningful else visible[:limit]
 
 
+def _inline_curation_lines(slug: str, recent_entries: List[sqlite3.Row], *, fmt: str) -> List[str]:
+    if not recent_entries:
+        return []
+
+    first = f"E{int(recent_entries[0]['id'])}"
+    lines = []
+    if fmt == "markdown":
+        lines.append(f"- Delete one saved item from ctx memory: `ctx delete --entry-id {first}`")
+        if len(recent_entries) > 1:
+            second = f"E{int(recent_entries[1]['id'])}"
+            lines.append(
+                f"- Delete multiple saved items at once: `ctx delete --entry-id {first} --entry-id {second}`"
+            )
+        lines.append(f"- For full pin/exclude/delete controls across saved items: `ctx curate {slug}`")
+    else:
+        lines.append(f"- Delete one saved item from ctx memory: ctx delete --entry-id {first}")
+        if len(recent_entries) > 1:
+            second = f"E{int(recent_entries[1]['id'])}"
+            lines.append(
+                f"- Delete multiple saved items at once: ctx delete --entry-id {first} --entry-id {second}"
+            )
+        lines.append(f"- For full pin/exclude/delete controls across saved items: ctx curate {slug}")
+    lines.append("- These actions change ctx memory only, not the original Claude/Codex transcript file.")
+    return lines
+
+
 def _last_task_candidate_score(row: sqlite3.Row, recency_index: int) -> int:
     content = str(row["content"] or "").strip()
     if not content or _looks_like_ctx_noise(content):
@@ -1374,10 +1424,12 @@ def _render_loaded_output(
             role = _entry_role(row)
             label = f"{row['type']}/{role}" if role and role != row["type"] else row["type"]
             recent_lines.append(
-                f"- S{row['session_id']} `{label}`: {_preview_text(row['content'], limit=110)}"
+                f"- E{row['id']} S{row['session_id']} `{label}`: {_preview_text(row['content'], limit=110)}"
             )
     else:
         recent_lines.append("- No entries yet")
+    inline_curation_md = _inline_curation_lines(str(workstream["slug"]), recent_entries, fmt="markdown")
+    inline_curation_text = _inline_curation_lines(str(workstream["slug"]), recent_entries, fmt="text")
 
     session_label = "n/a"
     if session:
@@ -1424,6 +1476,7 @@ def _render_loaded_output(
             "### Last things",
             *recent_lines,
             "",
+            *(["### Inline curation", *inline_curation_md, ""] if inline_curation_md else []),
             "### How To Use This Load",
             "",
             "- In Codex, press `ctrl-t` to inspect the full command output if the full pack is collapsed.",
@@ -1459,6 +1512,7 @@ def _render_loaded_output(
         "Last things:",
         *recent_lines,
         "",
+        *(["Inline curation:", *inline_curation_text, ""] if inline_curation_text else []),
         "How to use this load:",
         "- In Codex, press ctrl-t to inspect the full command output if the full pack is collapsed.",
         "- In Claude, expand the tool output block to inspect the full pack.",
@@ -2181,6 +2235,11 @@ def main():
     p_delete = sub.add_parser("delete", help="Delete a session by id, or delete the latest session in a workstream")
     p_delete.add_argument("name", nargs="?", help="Workstream slug or title; deletes the latest session in that workstream")
     p_delete.add_argument("--session-id", type=int, help="Delete this specific session id")
+    p_delete.add_argument(
+        "--entry-id",
+        action="append",
+        help="Delete saved entry ids from ctx memory; accepts 123 or E123 and can be repeated or comma-separated",
+    )
     p_delete.add_argument("--interactive", action="store_true", help="Open an interactive terminal UI to curate saved entries in a workstream")
 
     p_curate = sub.add_parser("curate", help="Interactively scroll, pin, exclude, or delete saved entries in a workstream")
@@ -2456,12 +2515,23 @@ def main():
             )
         )
     elif args.cmd == "delete":
+        entry_ids = _parse_entry_id_args(getattr(args, "entry_id", None))
         if getattr(args, "interactive", False):
-            if args.session_id is not None:
-                print("Choose either --interactive or --session-id, not both.", file=sys.stderr)
+            if args.session_id is not None or entry_ids:
+                print("Choose only one of --interactive, --session-id, or --entry-id.", file=sys.stderr)
                 return 2
             ws = _resolve_curation_workstream(args.name)
             return _launch_curation_ui(ws)
+        if args.session_id is not None and entry_ids:
+            print("Choose only one of --session-id or --entry-id.", file=sys.stderr)
+            return 2
+        if entry_ids:
+            if args.name:
+                print("Choose either a workstream name or --entry-id, not both.", file=sys.stderr)
+                return 2
+            deleted = [run_ctx(["entry-delete", str(entry_id)]).strip() for entry_id in entry_ids]
+            sys.stdout.write("\n".join(line for line in deleted if line) + "\n")
+            return 0
         if args.session_id is not None:
             sys.stdout.write(run_ctx(["session-delete", str(args.session_id)]))
         else:

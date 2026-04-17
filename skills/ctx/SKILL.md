@@ -20,7 +20,7 @@ Use the single `ctx` entrypoint:
 - `ctx start <workstream> [--pull]`
 - `ctx resume <workstream> [--compress] [--allow-other-repo]`
 - `ctx rename <new-name> [--from <existing-workstream>]`
-- `ctx delete <workstream>` or `ctx delete --session-id <id>`
+- `ctx delete <workstream>` or `ctx delete --session-id <id>` or `ctx delete --entry-id E123 [--entry-id E122]`
 - `ctx branch <source-workstream> <target-workstream> [--allow-other-repo]`
 - `ctx web --open`
 
