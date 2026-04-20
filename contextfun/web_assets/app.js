@@ -1,6 +1,14 @@
+function apiToken() {
+  return document.querySelector('meta[name="ctx-web-token"]')?.getAttribute("content") || "";
+}
+
 async function api(path, options = {}) {
+  const headers = { ...(options.headers || {}), "X-ctx-web-token": apiToken() };
+  if (options.body !== undefined && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
+    headers,
     ...options,
   });
   const data = await response.json().catch(() => ({}));

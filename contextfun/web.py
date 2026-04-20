@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import html
+import ipaddress
 import json
 import os
+import secrets
 import shutil
 import sqlite3
 import subprocess
@@ -13,6 +16,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .cli import (
+    _configured_db_path,
     _current_workspace_path,
     _delete_entry_attachments,
     _delete_search_docs_for_entry,
@@ -39,6 +43,47 @@ from .cli import (
 PACKAGE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_DIR.parent
 ASSET_DIR = PACKAGE_DIR / "web_assets"
+INDEX_TOKEN_PLACEHOLDER = "__CTX_WEB_TOKEN__"
+API_TOKEN_HEADER = "X-ctx-web-token"
+
+
+def _is_json_content_type(value: str | None) -> bool:
+    media_type = str(value or "").split(";", 1)[0].strip().lower()
+    return media_type == "application/json"
+
+
+def _is_loopback_host(host: str) -> bool:
+    value = str(host or "").strip()
+    if not value:
+        return False
+    if value.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(value.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def _validate_api_request(
+    headers,
+    *,
+    expected_token: str,
+    require_json: bool = False,
+) -> tuple[int, str] | None:
+    token = str(headers.get(API_TOKEN_HEADER, "") or "").strip()
+    if not token or not secrets.compare_digest(token, expected_token):
+        return (403, "missing or invalid API token")
+    if require_json and not _is_json_content_type(headers.get("Content-Type")):
+        return (415, "Content-Type must be application/json")
+    return None
+
+
+def _render_index_html(api_token: str) -> bytes:
+    html_text = (ASSET_DIR / "index.html").read_text(encoding="utf-8")
+    return html_text.replace(
+        INDEX_TOKEN_PLACEHOLDER,
+        html.escape(api_token, quote=True),
+    ).encode("utf-8")
 
 
 def _goal_text(row: sqlite3.Row) -> str:
@@ -104,7 +149,8 @@ class CtxWebApp:
     def __init__(self, db_path: Path | str):
         self.db_path = Path(db_path).resolve()
         self.launch_cwd = Path.cwd().resolve()
-        os.environ["CONTEXTFUN_DB"] = str(self.db_path)
+        self.api_token = secrets.token_urlsafe(32)
+        os.environ["ctx_DB"] = str(self.db_path)
         init_db(self.db_path, quiet=True)
 
     def _ctx_invocation(self) -> list[str]:
@@ -118,7 +164,7 @@ class CtxWebApp:
 
     def _ctx_env(self) -> dict:
         env = os.environ.copy()
-        env["CONTEXTFUN_DB"] = str(self.db_path)
+        env["ctx_DB"] = str(self.db_path)
         return env
 
     def _run_ctx(self, args: list[str], input_text: str | None = None) -> dict:
@@ -655,7 +701,23 @@ def build_handler(app: CtxWebApp):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:;")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none';",
+            )
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _send_index(self) -> None:
+            data = _render_index_html(app.api_token)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none';",
+            )
             self.end_headers()
             self.wfile.write(data)
 
@@ -669,9 +731,24 @@ def build_handler(app: CtxWebApp):
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:;")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none';",
+            )
             self.end_headers()
             self.wfile.write(data)
+
+        def _reject_api_request(self, *, require_json: bool = False) -> bool:
+            error = _validate_api_request(
+                self.headers,
+                expected_token=app.api_token,
+                require_json=require_json,
+            )
+            if not error:
+                return False
+            status, message = error
+            self._send_json({"error": message}, status=status)
+            return True
 
         def _read_json_body(self) -> dict:
             length = int(self.headers.get("Content-Length", "0") or "0")
@@ -687,13 +764,15 @@ def build_handler(app: CtxWebApp):
             path = parsed.path
             qs = parse_qs(parsed.query)
             if path == "/" or path.startswith("/workstreams/"):
-                self._send_asset("index.html", "text/html; charset=utf-8")
+                self._send_index()
                 return
             if path == "/app.js":
                 self._send_asset("app.js", "application/javascript; charset=utf-8")
                 return
             if path == "/styles.css":
                 self._send_asset("styles.css", "text/css; charset=utf-8")
+                return
+            if path.startswith("/api/") and self._reject_api_request():
                 return
             if path == "/api/status":
                 current = app.current()
@@ -736,6 +815,8 @@ def build_handler(app: CtxWebApp):
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/") and self._reject_api_request(require_json=True):
+                return
             data = self._read_json_body()
             if parsed.path == "/api/current":
                 slug = str(data.get("slug") or "").strip()
@@ -825,6 +906,8 @@ def build_handler(app: CtxWebApp):
 
 
 def run_server(db_path: Path, *, host: str = "127.0.0.1", port: int = 4310, open_browser_flag: bool = False) -> None:
+    if not _is_loopback_host(host):
+        raise SystemExit("ctx web only binds to loopback hosts. Use localhost, 127.0.0.1, or ::1.")
     app = CtxWebApp(db_path)
     server = ThreadingHTTPServer((host, port), build_handler(app))
     url = f"http://{host}:{port}/"
@@ -842,7 +925,7 @@ def run_server(db_path: Path, *, host: str = "127.0.0.1", port: int = 4310, open
 
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="Serve the ctx browser UI")
-    parser.add_argument("--db", default=os.getenv("CONTEXTFUN_DB"), help="Path to SQLite DB")
+    parser.add_argument("--db", default=str(_configured_db_path()), help="Path to SQLite DB")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=4310, help="Port to bind (default: 4310)")
     parser.add_argument("--open", action="store_true", help="Open the browser after starting")

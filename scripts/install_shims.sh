@@ -5,18 +5,19 @@ PREFIX="${HOME}/.contextfun"
 BIN_DIR="$PREFIX/bin"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
 
+shell_quote() {
+  printf '%q' "$1"
+}
+
 mkdir -p "$BIN_DIR"
 
-cat > "$BIN_DIR/ctx" <<'SH'
+ROOT_DIR_SHELL=$(shell_quote "$ROOT_DIR")
+cat > "$BIN_DIR/ctx" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT_DIR="__ROOT_DIR__"
-exec python3 "$ROOT_DIR/scripts/ctx_cmd.py" "$@"
-SH
-
-for shim in "$BIN_DIR/ctx"; do
-  perl -0pi -e 's|__ROOT_DIR__|'"$ROOT_DIR"'|g' "$shim"
-done
+ROOT_DIR=$ROOT_DIR_SHELL
+exec python3 "\$ROOT_DIR/scripts/ctx_cmd.py" "\$@"
+EOF
 
 chmod +x "$BIN_DIR/ctx"
 
@@ -31,7 +32,10 @@ rm -f \
 
 case ":${PATH}:" in
   *":${BIN_DIR}:"*) :;;
-  *) echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$HOME/.zshrc";;
+  *)
+    BIN_DIR_SHELL=$(shell_quote "$BIN_DIR")
+    printf 'export PATH=%s:"$PATH"\n' "$BIN_DIR_SHELL" >> "$HOME/.zshrc"
+    ;;
 esac
 
 echo "Installed repo-backed shim to $BIN_DIR: ctx"

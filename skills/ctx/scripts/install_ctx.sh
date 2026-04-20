@@ -26,6 +26,10 @@ LIB_DIR="$PREFIX/lib"
 SKILLS_DIR="$PREFIX/skills"
 DB_PATH="$PREFIX/context.db"
 
+shell_quote() {
+  printf '%q' "$1"
+}
+
 echo "Installing ctx to $PREFIX"
 echo "Release ref: $CTX_REF"
 mkdir -p "$BIN_DIR" "$LIB_DIR" "$SKILLS_DIR"
@@ -48,13 +52,13 @@ install -m 0755 "$SRC_DIR/scripts/ctx_cmd.py" "$BIN_DIR/ctx.py"
 cat > "$BIN_DIR/ctx" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-PREFIX="__PREFIX__"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+BIN_DIR="$SCRIPT_DIR"
+PREFIX="$(cd "$BIN_DIR/.." && pwd -P)"
 LIB_DIR="$PREFIX/lib"
-BIN_DIR="$PREFIX/bin"
 export PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}"
 exec python3 "$BIN_DIR/ctx.py" "$@"
 SH
-perl -0pi -e 's|__PREFIX__|'"$PREFIX"'|g' "$BIN_DIR/ctx"
 chmod +x "$BIN_DIR/ctx"
 rsync -a "$SRC_DIR/skills/" "$SKILLS_DIR/"
 
@@ -82,8 +86,10 @@ if [[ -n "${BASH_VERSION:-}" ]]; then SHELL_RC="$HOME/.bashrc"; fi
 if [[ -z "$SHELL_RC" ]]; then SHELL_RC="$HOME/.profile"; fi
 
 echo "Writing environment to $SHELL_RC"
-grep -q 'CONTEXTFUN_DB' "$SHELL_RC" 2>/dev/null || echo "export CONTEXTFUN_DB=\"$DB_PATH\"" >> "$SHELL_RC"
-grep -q "$BIN_DIR" "$SHELL_RC" 2>/dev/null || echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$SHELL_RC"
+DB_PATH_SHELL=$(shell_quote "$DB_PATH")
+BIN_DIR_SHELL=$(shell_quote "$BIN_DIR")
+grep -Fq 'CONTEXTFUN_DB' "$SHELL_RC" 2>/dev/null || printf 'export CONTEXTFUN_DB=%s\n' "$DB_PATH_SHELL" >> "$SHELL_RC"
+grep -Fq "$BIN_DIR" "$SHELL_RC" 2>/dev/null || printf 'export PATH=%s:"$PATH"\n' "$BIN_DIR_SHELL" >> "$SHELL_RC"
 
 echo "Initializing database at $DB_PATH"
 PYTHONPATH="$LIB_DIR" python3 -m contextfun --db "$DB_PATH" init >/dev/null || true
@@ -93,8 +99,8 @@ cat <<EOF
 ctx installed.
 
 Open a new shell or run:
-  export CONTEXTFUN_DB="$DB_PATH"
-  export PATH="$BIN_DIR:\$PATH"
+  export CONTEXTFUN_DB=$DB_PATH_SHELL
+  export PATH=$BIN_DIR_SHELL:"\$PATH"
 
 Try:
   ctx

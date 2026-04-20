@@ -23,6 +23,7 @@ if str(IMPORT_ROOT) not in sys.path:
 from contextfun.cli import (
     ClosingConnection,
     _attach_dir,
+    _db_env_value,
     _delete_entry_attachments,
     _delete_search_docs_for_entry,
     _current_workspace_path as _ctx_current_workspace_path,
@@ -72,11 +73,13 @@ def _augment_pythonpath(env: Dict[str, str]) -> None:
 
 
 def run_ctx(args_list, input_data=None):
+    db_path = _db_path()
     cmd = [sys.executable, "-m", "contextfun"]
-    cmd += ["--db", str(_db_path())]
+    cmd += ["--db", str(db_path)]
     cmd += args_list
     try:
         env = os.environ.copy()
+        env["ctx_DB"] = str(db_path)
         _augment_pythonpath(env)
         out = subprocess.check_output(
             cmd,
@@ -92,10 +95,12 @@ def run_ctx(args_list, input_data=None):
 
 
 def run_ctx_passthrough(args_list):
+    db_path = _db_path()
     cmd = [sys.executable, "-m", "contextfun"]
-    cmd += ["--db", str(_db_path())]
+    cmd += ["--db", str(db_path)]
     cmd += args_list
     env = os.environ.copy()
+    env["ctx_DB"] = str(db_path)
     _augment_pythonpath(env)
     return subprocess.call(cmd, cwd=_command_cwd(), env=env)
 
@@ -239,7 +244,7 @@ def _looks_like_ctx_noise(text: Optional[str]) -> bool:
         return True
     if "exceeds maximum allowed tokens" in value:
         return True
-    if any(cmd in value for cmd in ("ctx start ", "ctx resume ", "ctx list", "ctx search ", "ctx delete ", "ctx branch ")):
+    if any(cmd in value for cmd in ("ctx start ", "ctx resume ", "ctx list", "ctx search ", "ctx delete ", "ctx branch ", "ctx clear ")):
         if len(value) < 220:
             return True
     if value.startswith("ctx ") and len(value) < 120:
@@ -272,7 +277,7 @@ def _should_compress(explicit: bool, disabled: bool) -> bool:
 
 
 def _db_path() -> Path:
-    env_db = os.getenv("CONTEXTFUN_DB")
+    env_db = _db_env_value()
     if env_db:
         return Path(os.path.expanduser(env_db)).resolve()
     local_db = _current_or_parent_db()
@@ -2182,9 +2187,16 @@ def main():
     p_delete.add_argument("name", nargs="?", help="Workstream slug or title; deletes the latest session in that workstream")
     p_delete.add_argument("--session-id", type=int, help="Delete this specific session id")
     p_delete.add_argument("--interactive", action="store_true", help="Open an interactive terminal UI to curate saved entries in a workstream")
+    p_delete.add_argument("--allow-other-repo", action="store_true", help="Allow deleting from a workstream that belongs to a different repo")
 
     p_curate = sub.add_parser("curate", help="Interactively scroll, pin, exclude, or delete saved entries in a workstream")
     p_curate.add_argument("name", nargs="?", help="Workstream slug or title (defaults to current)")
+
+    p_clear = sub.add_parser("clear", help="Delete multiple workstreams and their linked sessions")
+    g_clear = p_clear.add_mutually_exclusive_group(required=True)
+    g_clear.add_argument("--this-repo", action="store_true", help="Delete only workstreams linked to the current repo")
+    g_clear.add_argument("--all", action="store_true", help="Delete workstreams across every repo in the current DB")
+    p_clear.add_argument("--yes", action="store_true", help="Confirm deletion")
 
     # Hidden expert command: pull transcripts explicitly
     p_pull = sub.add_parser("pull", help="Pull transcript(s) from Codex/Claude and ingest into the latest session")
@@ -2473,11 +2485,25 @@ def main():
             if not ws:
                 print(f"Workstream '{target}' not found", file=sys.stderr)
                 return 1
+            _assert_repo_guard(
+                ws,
+                allow_other_repo=getattr(args, "allow_other_repo", False),
+                override_command=f"ctx delete {target}",
+            )
             sid = run_ctx(["session-latest", "--workstream-slug", str(ws["slug"])]).strip()
             sys.stdout.write(run_ctx(["session-delete", sid]))
     elif args.cmd == "curate":
         ws = _resolve_curation_workstream(args.name)
         return _launch_curation_ui(ws)
+    elif args.cmd == "clear":
+        clear_args = ["workstream-clear"]
+        if getattr(args, "this_repo", False):
+            clear_args.append("--this-repo")
+        if getattr(args, "all", False):
+            clear_args.append("--all")
+        if getattr(args, "yes", False):
+            clear_args.append("--yes")
+        return run_ctx_passthrough(clear_args)
     elif args.cmd == "note":
         if args.text is None and sys.stdin.isatty():
             print("Provide text or pipe stdin", file=sys.stderr)

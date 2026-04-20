@@ -12,11 +12,12 @@ from pathlib import Path
 import re
 
 
-# Default to a stable user-level store unless CONTEXTFUN_DB overrides it.
+# Default to a stable user-level store unless ctx_DB overrides it.
 DEFAULT_HOME = Path(os.path.expanduser(os.getenv("CTX_HOME", "~/.contextfun"))).resolve()
 DEFAULT_DB = DEFAULT_HOME / "context.db"
 ATTACH_DIR = DEFAULT_HOME / "attachments"
 CURRENT_FILE = DEFAULT_HOME / "current.json"
+DB_ENV_NAMES = ("ctx_DB", "CONTEXTFUN_DB")
 SEARCH_INDEX_VERSION = "6"
 SEARCH_INDEX_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
@@ -142,8 +143,23 @@ def ensure_home(home: Path) -> None:
     # current.json is created on demand
 
 
+def _db_env_value() -> str | None:
+    for name in DB_ENV_NAMES:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
+
+def _configured_db_path() -> Path:
+    env_db = _db_env_value()
+    if env_db:
+        return Path(os.path.expanduser(env_db)).resolve()
+    return DEFAULT_DB
+
+
 def _home_dir() -> Path:
-    env_db = os.getenv("CONTEXTFUN_DB")
+    env_db = _db_env_value()
     if env_db:
         return Path(os.path.expanduser(env_db)).resolve().parent
     return DEFAULT_HOME
@@ -184,6 +200,38 @@ def _set_current_workstream(conn: sqlite3.Connection, *, slug=None, wid=None):
     cur_file.parent.mkdir(parents=True, exist_ok=True)
     cur_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return data
+
+
+def _current_state_files() -> list[Path]:
+    home = _home_dir()
+    seen: set[Path] = set()
+    files: list[Path] = []
+    for candidate in [home / CURRENT_FILE.name, *sorted(home.glob("current.*.json"))]:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        files.append(candidate)
+    return files
+
+
+def _clear_deleted_workstream_refs(workstream_ids: set[int]) -> int:
+    cleared = 0
+    for cur_file in _current_state_files():
+        if not cur_file.exists():
+            continue
+        try:
+            data = json.loads(cur_file.read_text(encoding="utf-8"))
+            current_id = int(data.get("id"))
+        except Exception:
+            continue
+        if current_id not in workstream_ids:
+            continue
+        try:
+            cur_file.unlink()
+            cleared += 1
+        except FileNotFoundError:
+            pass
+    return cleared
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -337,6 +385,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), timeout=30, factory=ClosingConnection)
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -758,7 +807,6 @@ def cmd_workstream_ensure(args: argparse.Namespace):
                 ),
             )
             wid = cur.lastrowid
-            conn.commit()
             row = conn.execute("SELECT * FROM workstream WHERE id = ?", (wid,)).fetchone()
             created = True
         if args.set_current:
@@ -817,6 +865,24 @@ def cmd_workstream_rename(args: argparse.Namespace):
     else:
         suffix = f" (requested '{args.new_name}')" if renamed else ""
         print(f"Renamed workstream {result['old_slug']} -> {result['slug']}{suffix}")
+
+
+def _display_workstreams(rows: list[sqlite3.Row], conn: sqlite3.Connection, *, include_hidden: bool = False) -> None:
+    current_workspace = _current_workspace_path()
+    decorated = []
+    for r in rows:
+        effective_workspace = _effective_workspace_for_workstream(conn, r)
+        if not include_hidden and not _repo_scope_match(current_workspace, effective_workspace, "all"):
+            continue
+        relation = _workspace_relation(current_workspace, effective_workspace)
+        decorated.append((0 if relation == "current" else 1, -int(r["id"]), r, effective_workspace))
+    decorated.sort(key=lambda item: (item[0], item[1]))
+    for _rank, _neg_id, r, effective_workspace in decorated:
+        tags = f" [{r['tags']}]" if r["tags"] else ""
+        ws = f" ({effective_workspace})" if effective_workspace else ""
+        summary = _workstream_one_line_summary(conn, r)
+        badge = _workspace_badge(current_workspace, effective_workspace)
+        print(f"{r['id']}: {r['slug']} - {r['title']}{tags}{ws} - {summary}{badge}")
 
 
 def cmd_workstream_new(args: argparse.Namespace):
@@ -936,22 +1002,6 @@ def _effective_workspace_for_workstream(conn: sqlite3.Connection, workstream_row
         normalized = _normalize_workspace_path(row["workspace"])
         if normalized:
             return normalized
-    entry_rows = conn.execute(
-        """
-        SELECT e.content
-        FROM entry e
-        JOIN session s ON s.id = e.session_id
-        WHERE s.workstream_id = ?
-        ORDER BY e.id ASC
-        LIMIT 160
-        """,
-        (int(workstream_row["id"]),),
-    ).fetchall()
-    for row in entry_rows:
-        for candidate in _extract_workspace_candidates(str(row["content"] or "")):
-            normalized = _normalize_workspace_path(candidate)
-            if normalized:
-                return normalized
     return ""
 
 
@@ -1029,7 +1079,7 @@ def _looks_like_ctx_noise(text: str) -> bool:
         return True
     if "exceeds maximum allowed tokens" in collapsed:
         return True
-    if any(cmd in collapsed for cmd in ("ctx start ", "ctx resume ", "ctx list", "ctx search ", "ctx delete ", "ctx branch ")):
+    if any(cmd in collapsed for cmd in ("ctx start ", "ctx resume ", "ctx list", "ctx search ", "ctx delete ", "ctx branch ", "ctx clear ")):
         if len(collapsed) < 220:
             return True
     if collapsed.startswith("ctx ") and len(collapsed) < 120:
@@ -1782,21 +1832,7 @@ def _workstream_one_line_summary(conn: sqlite3.Connection, row: sqlite3.Row) -> 
 
 
 def _print_workstreams(rows: list[sqlite3.Row], conn: sqlite3.Connection):
-    current_workspace = _current_workspace_path()
-    decorated = []
-    for r in rows:
-        effective_workspace = _effective_workspace_for_workstream(conn, r)
-        if not _repo_scope_match(current_workspace, effective_workspace, "all"):
-            continue
-        relation = _workspace_relation(current_workspace, effective_workspace)
-        decorated.append((0 if relation == "current" else 1, -int(r["id"]), r, effective_workspace))
-    decorated.sort(key=lambda item: (item[0], item[1]))
-    for _rank, _neg_id, r, effective_workspace in decorated:
-        tags = f" [{r['tags']}]" if r["tags"] else ""
-        ws = f" ({effective_workspace})" if effective_workspace else ""
-        summary = _workstream_one_line_summary(conn, r)
-        badge = _workspace_badge(current_workspace, effective_workspace)
-        print(f"{r['id']}: {r['slug']} - {r['title']}{tags}{ws} - {summary}{badge}")
+    _display_workstreams(rows, conn)
 
 
 def cmd_workstream_list(args: argparse.Namespace):
@@ -1831,6 +1867,79 @@ def cmd_workstream_list(args: argparse.Namespace):
                 print(r["slug"])
         else:
             _print_workstreams(rows, conn)
+
+
+def cmd_workstream_clear(args: argparse.Namespace):
+    db = Path(args.db)
+    init_db(db, quiet=True)
+    with connect(db) as conn:
+        rows = conn.execute("SELECT * FROM workstream ORDER BY id DESC").fetchall()
+        if getattr(args, "this_repo", False):
+            current_workspace = _current_workspace_path()
+            rows = [
+                r for r in rows
+                if _repo_scope_match(current_workspace, _effective_workspace_for_workstream(conn, r), "current")
+            ]
+        if not rows:
+            scope_label = "this repo" if getattr(args, "this_repo", False) else "all repos"
+            print(f"No workstreams matched for {scope_label}.")
+            return
+
+        workstream_ids = [int(r["id"]) for r in rows]
+        placeholders = ",".join("?" for _ in workstream_ids)
+        session_rows = conn.execute(
+            f"""
+            SELECT id
+            FROM session
+            WHERE workstream_id IN ({placeholders})
+            ORDER BY id ASC
+            """,
+            workstream_ids,
+        ).fetchall()
+        session_ids = [int(row["id"]) for row in session_rows]
+        entry_count = 0
+        if session_ids:
+            session_placeholders = ",".join("?" for _ in session_ids)
+            entry_count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) AS n FROM entry WHERE session_id IN ({session_placeholders})",
+                    session_ids,
+                ).fetchone()["n"]
+            )
+
+        scope_args = "--this-repo" if getattr(args, "this_repo", False) else "--all"
+        if not getattr(args, "yes", False):
+            print(
+                f"Matched {len(workstream_ids)} workstreams, {len(session_ids)} sessions, and {entry_count} entries for deletion."
+            )
+            _display_workstreams(rows, conn, include_hidden=True)
+            print(f"Refusing to delete without --yes. Rerun with: contextfun workstream-clear {scope_args} --yes")
+            sys.exit(2)
+
+        for workstream_id in workstream_ids:
+            _delete_search_docs_for_workstream(conn, workstream_id)
+        for session_id in session_ids:
+            _delete_search_docs_for_session(conn, session_id)
+        if session_ids:
+            session_placeholders = ",".join("?" for _ in session_ids)
+            conn.execute(
+                f"DELETE FROM session WHERE id IN ({session_placeholders})",
+                session_ids,
+            )
+        conn.execute(
+            f"DELETE FROM workstream WHERE id IN ({placeholders})",
+            workstream_ids,
+        )
+        conn.commit()
+
+    for session_id in session_ids:
+        _delete_session_attachments(db, session_id)
+    cleared_refs = _clear_deleted_workstream_refs(set(workstream_ids))
+    scope_label = "this repo" if getattr(args, "this_repo", False) else "all repos"
+    print(
+        f"Cleared {len(workstream_ids)} workstreams from {scope_label}; "
+        f"deleted {len(session_ids)} sessions, {entry_count} entries, and {cleared_refs} current pointers."
+    )
 
 
 def cmd_workstream_show(args: argparse.Namespace):
@@ -2473,11 +2582,12 @@ def cmd_ingest(args: argparse.Namespace):
 
 
 def add_common_args(parser: argparse.ArgumentParser, *, use_default: bool = False):
+    default_db = _configured_db_path()
     kwargs = {
-        "help": f"Path to SQLite DB (default: {DEFAULT_DB})",
+        "help": f"Path to SQLite DB (default: {default_db})",
     }
     if use_default:
-        kwargs["default"] = str(DEFAULT_DB)
+        kwargs["default"] = str(default_db)
     else:
         # Preserve a previously parsed top-level --db instead of overwriting it
         # with the subcommand default.
@@ -2570,6 +2680,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_w_ren.add_argument("new_name", help="New human-friendly name")
     p_w_ren.add_argument("--json", action="store_true", help="Output JSON result")
     p_w_ren.set_defaults(func=cmd_workstream_rename)
+
+    p_w_clear = sp.add_parser("workstream-clear", help="Delete multiple workstreams and their linked sessions")
+    add_common_args(p_w_clear)
+    g_w_clear = p_w_clear.add_mutually_exclusive_group(required=True)
+    g_w_clear.add_argument("--this-repo", action="store_true", help="Delete only workstreams linked to the current repo")
+    g_w_clear.add_argument("--all", action="store_true", help="Delete workstreams across every repo in the current DB")
+    p_w_clear.add_argument("--yes", action="store_true", help="Confirm deletion")
+    p_w_clear.set_defaults(func=cmd_workstream_clear)
 
     # session new
     p_s_new = sp.add_parser("session-new", help="Create a new session")
@@ -2850,7 +2968,7 @@ def build_parser() -> argparse.ArgumentParser:
 
         db = Path(args.db)
         ensure_home(db.parent)
-        os.environ["CONTEXTFUN_DB"] = str(db.resolve())
+        os.environ["ctx_DB"] = str(db.resolve())
         run_server(db, host=args.host, port=args.port, open_browser_flag=args.open)
     p_web.set_defaults(func=_cmd_web)
 

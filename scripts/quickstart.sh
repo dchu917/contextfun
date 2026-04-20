@@ -20,6 +20,10 @@ EOF
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 DB_LOCAL="$ROOT_DIR/.contextfun/context.db"
 
+shell_quote() {
+  printf '%q' "$1"
+}
+
 GLOBAL=false
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   usage; exit 0
@@ -48,11 +52,14 @@ else
   python3 -m contextfun --db "$DB_LOCAL" init >/dev/null || true
 
   ENV_FILE="$ROOT_DIR/ctx.env"
+  ROOT_DIR_SHELL=$(shell_quote "$ROOT_DIR")
+  DB_LOCAL_SHELL=$(shell_quote "$DB_LOCAL")
   echo "[2/5] Writing project env to $ENV_FILE"
   cat > "$ENV_FILE" <<EOF
 # ContextFun project environment
-export CONTEXTFUN_DB="$DB_LOCAL"
-alias ctx-local='python3 "$ROOT_DIR/scripts/ctx_cmd.py"'
+ctx_local_root=$ROOT_DIR_SHELL
+export ctx_DB=$DB_LOCAL_SHELL
+alias ctx-local='python3 "\$ctx_local_root/scripts/ctx_cmd.py"'
 EOF
 
   echo "[3/5] Installing the repo-backed ctx shim into ~/.contextfun/bin"
@@ -72,10 +79,10 @@ EOF
 - Browser frontend:
   - `ctx web --open`
 - Claude Code:
-  - Restart Claude Code, then use `/ctx`, `/ctx list`, `/ctx start my-stream --pull`, `/ctx resume my-stream`, `/ctx rename better-name`, `/ctx delete my-stream`, `/ctx branch source-stream target-stream`
+  - Restart Claude Code, then use `/ctx`, `/ctx list`, `/ctx start my-stream --pull`, `/ctx resume my-stream`, `/ctx rename better-name`, `/ctx delete my-stream`, `/ctx clear --this-repo --yes`, `/ctx branch source-stream target-stream`
   - Shortcut: `/branch source-stream target-stream`
 - Codex:
-  - Restart Codex, then use `ctx`, `ctx list`, `ctx start my-stream --pull`, `ctx resume my-stream`, `ctx rename better-name`, `ctx delete my-stream`, `ctx branch source-stream target-stream`
+  - Restart Codex, then use `ctx`, `ctx list`, `ctx start my-stream --pull`, `ctx resume my-stream`, `ctx rename better-name`, `ctx delete my-stream`, `ctx clear --this-repo --yes`, `ctx branch source-stream target-stream`
   - Codex does not currently support custom repo-defined slash commands like `/ctx list`.
 - Optional automation helpers for paste/status workflows:
   - `python3 scripts/skills/ctx_resume_skill.py --name "my-stream" --paste`

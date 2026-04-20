@@ -1,10 +1,14 @@
 import importlib.util
+import argparse
 import contextlib
+import io
 import json
 import os
+import shlex
 import sqlite3
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 import shutil
@@ -23,6 +27,7 @@ SKILL_INSTALL_SH = ROOT / "skills" / "ctx" / "scripts" / "install_ctx.sh"
 SKILL_WRAPPER_SH = ROOT / "skills" / "ctx" / "scripts" / "ctx.sh"
 CLI_PY = ROOT / "contextfun" / "cli.py"
 WEB_PY = ROOT / "contextfun" / "web.py"
+DOCS_INDEX = ROOT / "docs" / "README.md"
 
 
 def _load_ctx_cmd_module():
@@ -42,7 +47,7 @@ class CtxReleaseSmokeTests(unittest.TestCase):
         (self.codex_home / "sessions").mkdir(parents=True, exist_ok=True)
         (self.claude_home / "projects").mkdir(parents=True, exist_ok=True)
         self.env = os.environ.copy()
-        self.env["CONTEXTFUN_DB"] = str(self.db_path)
+        self.env["ctx_DB"] = str(self.db_path)
         self.env["CTX_AUTOPULL_DEFAULT"] = "0"
         self.env["CODEX_HOME"] = str(self.codex_home)
         self.env["CLAUDE_HOME"] = str(self.claude_home)
@@ -54,6 +59,30 @@ class CtxReleaseSmokeTests(unittest.TestCase):
     def write_executable(self, path: Path, text: str) -> None:
         path.write_text(text, encoding="utf-8")
         path.chmod(0o755)
+
+    def make_release_archive(self) -> Path:
+        archive_path = Path(self.tmpdir.name) / "ctx-release.tar.gz"
+        if archive_path.exists():
+            return archive_path
+
+        staging_root = Path(self.tmpdir.name) / "archive-src" / "ctx-fixture"
+        (staging_root / "scripts").mkdir(parents=True, exist_ok=True)
+        shutil.copytree(ROOT / "contextfun", staging_root / "contextfun")
+        shutil.copytree(ROOT / "skills", staging_root / "skills")
+        shutil.copy2(ROOT / "scripts" / "ctx_cmd.py", staging_root / "scripts" / "ctx_cmd.py")
+        shutil.copy2(ROOT / "scripts" / "install_skills.sh", staging_root / "scripts" / "install_skills.sh")
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(staging_root, arcname="ctx-fixture")
+        return archive_path
+
+    def write_curl_stub(self, path: Path, archive_path: Path) -> None:
+        self.write_executable(
+            path,
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f"cat {shlex.quote(str(archive_path))}\n",
+        )
 
     def run_ctx(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -155,6 +184,21 @@ class CtxReleaseSmokeTests(unittest.TestCase):
             self.assertIn("## ctx loaded: `guard-branch`", allowed.stdout)
             self.assertIn("Carry this note into the allowed branch.", allowed.stdout)
 
+    def test_delete_repo_guard_requires_allow_other_repo(self):
+        with tempfile.TemporaryDirectory() as repo_a_tmp, tempfile.TemporaryDirectory() as repo_b_tmp:
+            repo_a = Path(repo_a_tmp)
+            repo_b = Path(repo_b_tmp)
+            self.assertEqual(self.run_ctx_in(repo_a, "start", "guard-delete", "--no-auto-pull").returncode, 0)
+
+            blocked = self.run_ctx_in(repo_b, "delete", "guard-delete")
+            self.assertEqual(blocked.returncode, 2)
+            self.assertIn("belongs to another repo", blocked.stderr)
+            self.assertIn("ctx delete guard-delete --allow-other-repo", blocked.stderr)
+
+            allowed = self.run_ctx_in(repo_b, "delete", "guard-delete", "--allow-other-repo")
+            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+            self.assertIn("Deleted session 1: New session #guard-delete", allowed.stdout)
+
     def test_delete_workstream_name_removes_latest_session_only(self):
         self.assertEqual(self.run_ctx("start", "delete-demo", "--no-auto-pull").returncode, 0)
         self.write_codex_transcript()
@@ -174,6 +218,116 @@ class CtxReleaseSmokeTests(unittest.TestCase):
             ).fetchall()
 
         self.assertEqual([(int(row["id"]), row["title"]) for row in rows], [(1, "New session")])
+
+    def test_clear_this_repo_requires_yes_and_preserves_other_repo(self):
+        with tempfile.TemporaryDirectory() as repo_a_tmp, tempfile.TemporaryDirectory() as repo_b_tmp:
+            repo_a = Path(repo_a_tmp)
+            repo_b = Path(repo_b_tmp)
+            self.assertEqual(self.run_ctx_in(repo_a, "start", "clear-a", "--no-auto-pull").returncode, 0)
+            self.assertEqual(self.run_ctx_in(repo_b, "start", "clear-b", "--no-auto-pull").returncode, 0)
+
+            preview = self.run_ctx_in(repo_a, "clear", "--this-repo")
+            self.assertEqual(preview.returncode, 2)
+            self.assertIn("Refusing to delete without --yes.", preview.stdout)
+            self.assertIn("clear-a", preview.stdout)
+            self.assertNotIn("clear-b", preview.stdout)
+
+            cleared = self.run_ctx_in(repo_a, "clear", "--this-repo", "--yes")
+            self.assertEqual(cleared.returncode, 0, cleared.stderr)
+            self.assertIn("Cleared 1 workstreams from this repo", cleared.stdout)
+
+            with contextlib.closing(sqlite3.connect(str(self.db_path))) as conn:
+                rows = conn.execute("SELECT slug FROM workstream ORDER BY slug").fetchall()
+
+            self.assertEqual([row[0] for row in rows], ["clear-b"])
+
+    def test_clear_all_removes_linked_sessions_attachments_and_current_pointer(self):
+        repo = Path(self.tmpdir.name) / "repo"
+        repo.mkdir(parents=True, exist_ok=True)
+        self.assertEqual(self.run_ctx_in(repo, "start", "clear-all-demo", "--no-auto-pull").returncode, 0)
+        self.assertEqual(self.run_ctx_in(repo, "note", "Cleanup note for clear-all verification.").returncode, 0)
+
+        with contextlib.closing(sqlite3.connect(str(self.db_path))) as conn:
+            conn.row_factory = sqlite3.Row
+            session_id = int(
+                conn.execute(
+                    "SELECT id FROM session WHERE workstream_id = (SELECT id FROM workstream WHERE slug = 'clear-all-demo')"
+                ).fetchone()["id"]
+            )
+
+        attachments_dir = self.db_path.parent / "attachments" / str(session_id)
+        attachments_dir.mkdir(parents=True, exist_ok=True)
+        (attachments_dir / "marker.txt").write_text("cleanup me", encoding="utf-8")
+        current_file = self.db_path.parent / "current.json"
+        self.assertTrue(current_file.exists())
+
+        cleared = self.run_ctx_in(repo, "clear", "--all", "--yes")
+        self.assertEqual(cleared.returncode, 0, cleared.stderr)
+        self.assertIn("Cleared 1 workstreams from all repos", cleared.stdout)
+
+        with contextlib.closing(sqlite3.connect(str(self.db_path))) as conn:
+            workstream_count = conn.execute("SELECT COUNT(*) FROM workstream").fetchone()[0]
+            session_count = conn.execute("SELECT COUNT(*) FROM session").fetchone()[0]
+            entry_count = conn.execute("SELECT COUNT(*) FROM entry").fetchone()[0]
+
+        self.assertEqual(workstream_count, 0)
+        self.assertEqual(session_count, 0)
+        self.assertEqual(entry_count, 0)
+        self.assertFalse(attachments_dir.exists())
+        self.assertFalse(current_file.exists())
+
+    def test_list_this_repo_ignores_workspace_hints_embedded_in_entries(self):
+        env = {**self.env, "PYTHONPATH": str(ROOT)}
+        init_proc = subprocess.run(
+            [sys.executable, "-m", "contextfun", "--db", str(self.db_path), "init"],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(init_proc.returncode, 0, init_proc.stderr)
+
+        create_workstream = subprocess.run(
+            [sys.executable, "-m", "contextfun", "--db", str(self.db_path), "workstream-new", "spoofed", "spoofed"],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(create_workstream.returncode, 0, create_workstream.stderr)
+
+        create_session = subprocess.run(
+            [sys.executable, "-m", "contextfun", "--db", str(self.db_path), "session-new", "spoof-session", "--workstream-slug", "spoofed"],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(create_session.returncode, 0, create_session.stderr)
+        session_id = create_session.stdout.strip()
+
+        injected = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "contextfun",
+                "--db",
+                str(self.db_path),
+                "add",
+                session_id,
+                "--text",
+                f"<cwd>{ROOT}</cwd>",
+            ],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(injected.returncode, 0, injected.stderr)
+
+        listed = self.run_ctx("list", "--this-repo")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertNotIn("spoofed", listed.stdout)
 
     def test_branch_clones_saved_snapshot(self):
         self.assertEqual(self.run_ctx("start", "branch-source", "--no-compress").returncode, 0)
@@ -223,6 +377,187 @@ class CtxReleaseSmokeTests(unittest.TestCase):
         self.assertIn("Alpha source note for branching fidelity.", resumed.stdout)
         self.assertIn("Keep branches detached from transcript bindings.", resumed.stdout)
 
+    def test_wrapper_noninteractive_commands_cover_capture_and_alias_paths(self):
+        repo = Path(self.tmpdir.name) / "wrapper-repo"
+        repo.mkdir(parents=True, exist_ok=True)
+        snap_file = repo / "snap.txt"
+        snap_file.write_text("Snapshot body for wrapper coverage.\n", encoding="utf-8")
+        ingest_file = repo / "ingest.txt"
+        ingest_file.write_text("Ingested body for wrapper coverage.\n", encoding="utf-8")
+
+        created = self.run_ctx_in(repo, "new", "wrapper-demo", "--no-compress")
+        self.assertEqual(created.returncode, 0, created.stderr)
+        self.assertIn("## ctx loaded: `wrapper-demo`", created.stdout)
+
+        current = self.run_ctx_in(repo)
+        self.assertEqual(current.returncode, 0, current.stderr)
+        self.assertIn("Current workstream: wrapper-demo", current.stdout)
+
+        listed = self.run_ctx_in(repo, "list", "--this-repo")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertIn("wrapper-demo", listed.stdout)
+
+        searched = self.run_ctx_in(repo, "search", "wrapper-demo", "--this-repo")
+        self.assertEqual(searched.returncode, 0, searched.stderr)
+        self.assertIn("wrapper-demo", searched.stdout)
+
+        resumed = self.run_ctx_in(repo, "go", "wrapper-demo", "--no-auto-pull", "--no-compress")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertIn("## ctx loaded: `wrapper-demo`", resumed.stdout)
+
+        renamed = self.run_ctx_in(repo, "rename", "wrapper-demo-renamed")
+        self.assertEqual(renamed.returncode, 0, renamed.stderr)
+        self.assertIn("wrapper-demo -> wrapper-demo-renamed", renamed.stdout)
+
+        current_after_rename = self.run_ctx_in(repo)
+        self.assertEqual(current_after_rename.returncode, 0, current_after_rename.stderr)
+        self.assertIn("Current workstream: wrapper-demo-renamed", current_after_rename.stdout)
+
+        set_proc = self.run_ctx_in(repo, "set", "wrapper-demo-renamed")
+        self.assertEqual(set_proc.returncode, 0, set_proc.stderr)
+        self.assertIn("Current workstream: wrapper-demo-renamed", set_proc.stdout)
+
+        self.assertEqual(self.run_ctx_in(repo, "note", "Coverage note body.").returncode, 0)
+        self.assertEqual(self.run_ctx_in(repo, "decision", "Coverage decision body.").returncode, 0)
+        self.assertEqual(self.run_ctx_in(repo, "todo", "Coverage todo body.").returncode, 0)
+        self.assertEqual(self.run_ctx_in(repo, "link", "https://example.com/coverage").returncode, 0)
+        self.assertEqual(self.run_ctx_in(repo, "snap", str(snap_file)).returncode, 0)
+        self.assertEqual(self.run_ctx_in(repo, "run", "printf wrapper-run-output").returncode, 0)
+        self.assertEqual(self.run_ctx_in(repo, "git").returncode, 0)
+        self.assertEqual(
+            self.run_ctx_in(
+                repo,
+                "ingest-file",
+                str(ingest_file),
+                "--format",
+                "text",
+                "--source",
+                "codex",
+            ).returncode,
+            0,
+        )
+
+        pulled = self.run_ctx_in(repo, "pull", "--auto")
+        self.assertEqual(pulled.returncode, 0, pulled.stderr)
+        self.assertEqual(pulled.stdout.strip(), "none")
+
+        resumed_again = self.run_ctx_in(repo, "resume", "wrapper-demo-renamed", "--no-auto-pull", "--no-compress")
+        self.assertEqual(resumed_again.returncode, 0, resumed_again.stderr)
+        self.assertIn("## ctx loaded: `wrapper-demo-renamed`", resumed_again.stdout)
+        self.assertIn("Coverage note body.", resumed_again.stdout)
+
+        searched_after_entries = self.run_ctx_in(repo, "search", "Coverage note body", "--this-repo")
+        self.assertEqual(searched_after_entries.returncode, 0, searched_after_entries.stderr)
+        self.assertIn("wrapper-demo-renamed", searched_after_entries.stdout)
+
+        self.assertEqual(self.run_ctx_in(repo, "start", "delete-by-id", "--no-auto-pull").returncode, 0)
+        with contextlib.closing(sqlite3.connect(str(self.db_path))) as conn:
+            conn.row_factory = sqlite3.Row
+            delete_session_id = int(
+                conn.execute(
+                    "SELECT id FROM session WHERE workstream_id = (SELECT id FROM workstream WHERE slug = 'delete-by-id')"
+                ).fetchone()["id"]
+            )
+
+        deleted = self.run_ctx_in(repo, "delete", "--session-id", str(delete_session_id))
+        self.assertEqual(deleted.returncode, 0, deleted.stderr)
+        self.assertIn(f"Deleted session {delete_session_id}", deleted.stdout)
+
+        with contextlib.closing(sqlite3.connect(str(self.db_path))) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT e.type, e.content
+                FROM entry e
+                JOIN session s ON s.id = e.session_id
+                JOIN workstream w ON w.id = s.workstream_id
+                WHERE w.slug = 'wrapper-demo-renamed'
+                ORDER BY e.id
+                """
+            ).fetchall()
+
+        entries = [(row["type"], row["content"] or "") for row in rows]
+        entry_types = {entry_type for entry_type, _content in entries}
+        self.assertTrue({"note", "decision", "todo", "link", "file", "cmd"}.issubset(entry_types))
+        self.assertTrue(any("Coverage note body." in content for _entry_type, content in entries))
+        self.assertTrue(any("$ printf wrapper-run-output" in content for _entry_type, content in entries))
+        self.assertTrue(any("Git context" in content for _entry_type, content in entries))
+        self.assertTrue(any("Ingested body for wrapper coverage." in content for _entry_type, content in entries))
+
+    def test_wrapper_curate_paths_dispatch_to_the_terminal_ui(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        fake_workstream = {"id": 1, "slug": "demo", "title": "demo"}
+
+        with mock.patch.object(ctx_cmd, "_resolve_curation_workstream", return_value=fake_workstream) as resolve, mock.patch.object(
+            ctx_cmd, "_launch_curation_ui", return_value=7
+        ) as launch:
+            with mock.patch.object(sys, "argv", [str(CTX_CMD), "curate", "demo"]):
+                self.assertEqual(ctx_cmd.main(), 7)
+            resolve.assert_called_with("demo")
+            launch.assert_called_with(fake_workstream)
+
+            resolve.reset_mock()
+            launch.reset_mock()
+            with mock.patch.object(sys, "argv", [str(CTX_CMD), "delete", "--interactive", "demo"]):
+                self.assertEqual(ctx_cmd.main(), 7)
+            resolve.assert_called_with("demo")
+            launch.assert_called_with(fake_workstream)
+
+    def test_wrapper_web_and_ingest_clipboard_dispatch_cleanly(self):
+        ctx_cmd = _load_ctx_cmd_module()
+
+        with mock.patch.object(ctx_cmd, "run_ctx_passthrough", return_value=0) as passthrough:
+            with mock.patch.object(sys, "argv", [str(CTX_CMD), "web", "--host", "0.0.0.0", "--port", "9999", "--open"]):
+                self.assertEqual(ctx_cmd.main(), 0)
+            passthrough.assert_called_with(["web", "--host", "0.0.0.0", "--port", "9999", "--open"])
+
+        with mock.patch.object(ctx_cmd.subprocess, "check_output", return_value=b"clipboard body"), mock.patch.object(
+            ctx_cmd, "run_ctx", return_value="ingested\n"
+        ) as run_ctx_call, mock.patch.object(sys, "argv", [str(CTX_CMD), "ingest-clipboard", "--format", "text", "--source", "claude"]), mock.patch(
+            "sys.stdout", new_callable=io.StringIO
+        ):
+            self.assertIsNone(ctx_cmd.main())
+
+        run_ctx_call.assert_called_with(
+            ["ingest", "--file", "-", "--format", "text", "--source", "claude"],
+            input_data="clipboard body",
+        )
+
+    def test_web_helpers_enforce_loopback_token_and_json(self):
+        from contextfun import web as ctx_web
+
+        self.assertTrue(ctx_web._is_loopback_host("127.0.0.1"))
+        self.assertTrue(ctx_web._is_loopback_host("localhost"))
+        self.assertTrue(ctx_web._is_loopback_host("::1"))
+        self.assertFalse(ctx_web._is_loopback_host("0.0.0.0"))
+
+        rendered = ctx_web._render_index_html("token-demo").decode("utf-8")
+        self.assertIn('meta name="ctx-web-token" content="token-demo"', rendered)
+        self.assertNotIn(ctx_web.INDEX_TOKEN_PLACEHOLDER, rendered)
+
+        self.assertEqual(
+            ctx_web._validate_api_request({}, expected_token="secret"),
+            (403, "missing or invalid API token"),
+        )
+        self.assertEqual(
+            ctx_web._validate_api_request(
+                {"X-ctx-web-token": "secret", "Content-Type": "text/plain"},
+                expected_token="secret",
+                require_json=True,
+            ),
+            (415, "Content-Type must be application/json"),
+        )
+        self.assertIsNone(
+            ctx_web._validate_api_request(
+                {"X-ctx-web-token": "secret", "Content-Type": "application/json; charset=utf-8"},
+                expected_token="secret",
+                require_json=True,
+            )
+        )
+
+        with self.assertRaises(SystemExit):
+            ctx_web.run_server(self.db_path, host="0.0.0.0", port=4310)
+
     def test_install_script_is_release_pinned_and_installs_skills(self):
         text = INSTALL_SH.read_text(encoding="utf-8")
         self.assertIn('DEFAULT_REF="v0.1.1"', text)
@@ -249,6 +584,223 @@ class CtxReleaseSmokeTests(unittest.TestCase):
         self.assertIn('archive/refs/tags/', text)
         self.assertIn("Downloading ctx into ./ctx", text)
 
+    def test_quickstart_ctx_env_and_repo_shim_do_not_execute_embedded_repo_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            marker_dir = tmp_path / "home"
+            marker_dir.mkdir()
+            repo_root = tmp_path / "repo$(touch PWNED)"
+            shutil.copytree(
+                ROOT,
+                repo_root,
+                ignore=shutil.ignore_patterns(".git", ".contextfun", "ctx", "__pycache__", "*.pyc"),
+            )
+
+            env = self.env.copy()
+            env["HOME"] = str(marker_dir)
+            env["CODEX_SKILLS_DIR"] = str(tmp_path / "codex-skills")
+            env["CLAUDE_SKILLS_DIR"] = str(tmp_path / "claude-skills")
+            env["PYTHONPATH"] = str(repo_root)
+            proc = subprocess.run(
+                ["bash", str(repo_root / "scripts" / "quickstart.sh")],
+                cwd=str(repo_root),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            marker = marker_dir / "PWNED"
+            alias_proc = subprocess.run(
+                ["bash", "--noprofile", "--rcfile", str(repo_root / "ctx.env"), "-ic", "ctx-local list >/dev/null"],
+                cwd=str(marker_dir),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(alias_proc.returncode, 0, alias_proc.stderr)
+            self.assertFalse(marker.exists())
+
+            shim_proc = subprocess.run(
+                [str(marker_dir / ".contextfun" / "bin" / "ctx"), "list"],
+                cwd=str(marker_dir),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(shim_proc.returncode, 0, shim_proc.stderr)
+            self.assertFalse(marker.exists())
+
+    def test_setup_sh_runs_quickstart_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / "home"
+            home.mkdir()
+            repo_root = tmp_path / "repo$(touch PWNED)"
+            shutil.copytree(
+                ROOT,
+                repo_root,
+                ignore=shutil.ignore_patterns(".git", ".contextfun", "ctx", "__pycache__", "*.pyc"),
+            )
+
+            env = self.env.copy()
+            env["HOME"] = str(home)
+            env["CODEX_SKILLS_DIR"] = str(tmp_path / "codex-skills")
+            env["CLAUDE_SKILLS_DIR"] = str(tmp_path / "claude-skills")
+            env["PYTHONPATH"] = str(repo_root)
+            proc = subprocess.run(
+                ["bash", str(repo_root / "setup.sh")],
+                cwd=str(repo_root),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            marker = home / "PWNED"
+            ctx_env = repo_root / "ctx.env"
+            self.assertTrue(ctx_env.exists())
+            alias_proc = subprocess.run(
+                ["bash", "--noprofile", "--rcfile", str(ctx_env), "-ic", "ctx-local list >/dev/null"],
+                cwd=str(home),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(alias_proc.returncode, 0, alias_proc.stderr)
+            self.assertFalse(marker.exists())
+
+    def test_install_script_wrapper_and_rc_lines_do_not_execute_embedded_home_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            safe_cwd = tmp_path / "safe"
+            safe_cwd.mkdir()
+            marker = safe_cwd / "PWNED"
+            home = tmp_path / "home$(touch PWNED)"
+            home.mkdir()
+            archive_path = self.make_release_archive()
+            stub_dir = tmp_path / "stub-bin"
+            stub_dir.mkdir()
+            self.write_curl_stub(stub_dir / "curl", archive_path)
+
+            env = self.env.copy()
+            env["HOME"] = str(home)
+            env["PATH"] = f"{stub_dir}{os.pathsep}{env['PATH']}"
+            env["CODEX_SKILLS_DIR"] = str(tmp_path / "codex-skills")
+            env["CLAUDE_SKILLS_DIR"] = str(tmp_path / "claude-skills")
+            proc = subprocess.run(
+                ["bash", str(INSTALL_SH)],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            rc_proc = subprocess.run(
+                ["bash", "-lc", 'source "$1" >/dev/null', "bash", str(home / ".bashrc")],
+                cwd=str(safe_cwd),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(rc_proc.returncode, 0, rc_proc.stderr)
+            self.assertFalse(marker.exists())
+
+            shim_proc = subprocess.run(
+                [str(home / ".contextfun" / "bin" / "ctx"), "list"],
+                cwd=str(safe_cwd),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(shim_proc.returncode, 0, shim_proc.stderr)
+            self.assertFalse(marker.exists())
+
+    def test_skill_bootstrap_installer_wrapper_and_rc_lines_do_not_execute_embedded_home_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            safe_cwd = tmp_path / "safe"
+            safe_cwd.mkdir()
+            marker = safe_cwd / "PWNED"
+            home = tmp_path / "home$(touch PWNED)"
+            home.mkdir()
+            archive_path = self.make_release_archive()
+            stub_dir = tmp_path / "stub-bin"
+            stub_dir.mkdir()
+            self.write_curl_stub(stub_dir / "curl", archive_path)
+
+            env = self.env.copy()
+            env["HOME"] = str(home)
+            env["PATH"] = f"{stub_dir}{os.pathsep}{env['PATH']}"
+            env["CODEX_SKILLS_DIR"] = str(tmp_path / "codex-skills")
+            env["CLAUDE_SKILLS_DIR"] = str(tmp_path / "claude-skills")
+            proc = subprocess.run(
+                ["bash", str(SKILL_INSTALL_SH)],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            rc_proc = subprocess.run(
+                ["bash", "-lc", 'source "$1" >/dev/null', "bash", str(home / ".bashrc")],
+                cwd=str(safe_cwd),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(rc_proc.returncode, 0, rc_proc.stderr)
+            self.assertFalse(marker.exists())
+
+            shim_proc = subprocess.run(
+                [str(home / ".contextfun" / "bin" / "ctx"), "list"],
+                cwd=str(safe_cwd),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(shim_proc.returncode, 0, shim_proc.stderr)
+            self.assertFalse(marker.exists())
+            self.assertTrue((home / ".contextfun" / "skills" / "codex" / "ctx-start" / "SKILL.md").exists())
+            self.assertTrue((home / ".contextfun" / "skills" / "claude" / "ctx" / "SKILL.md").exists())
+
+    def test_agent_setup_local_wrapper_does_not_execute_embedded_prefix_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            safe_cwd = tmp_path / "safe"
+            safe_cwd.mkdir()
+            marker = safe_cwd / "PWNED"
+            workdir = tmp_path / "work$(touch PWNED)"
+            workdir.mkdir()
+            archive_path = self.make_release_archive()
+            stub_dir = tmp_path / "stub-bin"
+            stub_dir.mkdir()
+            self.write_curl_stub(stub_dir / "curl", archive_path)
+
+            env = self.env.copy()
+            env["HOME"] = str(tmp_path / "home")
+            env["PATH"] = f"{stub_dir}{os.pathsep}{env['PATH']}"
+            proc = subprocess.run(
+                ["bash", str(AGENT_SETUP_LOCAL_SH)],
+                cwd=str(workdir),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+
+            shim_proc = subprocess.run(
+                [str(workdir / "ctx" / "bin" / "ctx"), "list"],
+                cwd=str(safe_cwd),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(shim_proc.returncode, 0, shim_proc.stderr)
+            self.assertFalse(marker.exists())
+
     def test_cli_uses_stable_user_home_and_future_annotations(self):
         cli_text = CLI_PY.read_text(encoding="utf-8")
         web_text = WEB_PY.read_text(encoding="utf-8")
@@ -257,6 +809,9 @@ class CtxReleaseSmokeTests(unittest.TestCase):
         self.assertIn("from __future__ import annotations", web_text)
         self.assertIn("from __future__ import annotations", ctx_text)
         self.assertIn('CTX_HOME', cli_text)
+        self.assertIn('ctx_DB', cli_text)
+        self.assertIn('ctx_DB', web_text)
+        self.assertIn('ctx_DB', ctx_text)
         self.assertIn('~/.contextfun', cli_text)
         self.assertIn('cmd = [sys.executable, "-m", "contextfun"]', ctx_text)
 
@@ -343,6 +898,7 @@ class CtxReleaseSmokeTests(unittest.TestCase):
             (home / ".zshrc").write_text(
                 "\n".join(
                     [
+                        'export ctx_DB="' + str(prefix / "context.db") + '"',
                         'export CONTEXTFUN_DB="' + str(prefix / "context.db") + '"',
                         'export PATH="' + str(prefix / "bin") + ':$PATH"',
                         "export KEEP_ME=1",
@@ -369,6 +925,7 @@ class CtxReleaseSmokeTests(unittest.TestCase):
             self.assertFalse((claude_dir / "ctx").exists())
             zshrc_text = (home / ".zshrc").read_text(encoding="utf-8")
             self.assertIn("export KEEP_ME=1", zshrc_text)
+            self.assertNotIn("ctx_DB", zshrc_text)
             self.assertNotIn("CONTEXTFUN_DB", zshrc_text)
             self.assertNotIn(str(prefix / "bin"), zshrc_text)
 
@@ -454,6 +1011,72 @@ exec python3 "$ROOT_DIR/scripts/ctx_cmd.py" "$@"
         ]
         for path in expected:
             self.assertTrue(path.exists(), f"missing Claude entrypoint: {path}")
+
+    def test_docs_guides_exist_and_are_linked_from_readme(self):
+        docs = [
+            "install.md",
+            "usage.md",
+            "architecture.md",
+            "integrations.md",
+            "repo-layout.md",
+            "maintenance.md",
+            "README.md",
+        ]
+        readme_text = (ROOT / "README.md").read_text(encoding="utf-8")
+        index_text = DOCS_INDEX.read_text(encoding="utf-8")
+        for name in docs:
+            path = ROOT / "docs" / name
+            self.assertTrue(path.exists(), f"missing docs guide: {path}")
+            self.assertIn(f"docs/{name}", readme_text)
+            if name != "README.md":
+                self.assertIn(name, index_text)
+
+    def test_directory_indexes_and_shared_skill_helper_exist(self):
+        repo_layout_text = (ROOT / "docs" / "repo-layout.md").read_text(encoding="utf-8")
+        index_text = DOCS_INDEX.read_text(encoding="utf-8")
+        expected = [
+            ROOT / "scripts" / "README.md",
+            ROOT / "skills" / "README.md",
+            ROOT / "tools" / "README.md",
+            ROOT / "skills" / "shared" / "ctx_dispatch.sh",
+        ]
+        for path in expected:
+            self.assertTrue(path.exists(), f"missing repo index/helper: {path}")
+        self.assertIn("../scripts/README.md", index_text)
+        self.assertIn("../skills/README.md", index_text)
+        self.assertIn("../tools/README.md", index_text)
+        self.assertIn("../scripts/README.md", repo_layout_text)
+        self.assertIn("../skills/README.md", repo_layout_text)
+        self.assertIn("../tools/README.md", repo_layout_text)
+
+    def test_skill_wrapper_cleanup_is_centralized(self):
+        wrappers = [
+            ROOT / "skills" / "claude" / "branch" / "scripts" / "skills" / "branch.sh",
+            ROOT / "skills" / "claude" / "ctx-delete" / "scripts" / "skills" / "ctx_delete.sh",
+            ROOT / "skills" / "claude" / "ctx-list" / "scripts" / "skills" / "ctx_cli_skill.sh",
+            ROOT / "skills" / "claude" / "ctx-resume" / "scripts" / "skills" / "ctx_resume.sh",
+            ROOT / "skills" / "claude" / "ctx-start" / "scripts" / "skills" / "ctx_start.sh",
+            ROOT / "skills" / "claude" / "ctx" / "scripts" / "skills" / "ctx.sh",
+            ROOT / "skills" / "codex" / "ctx-branch" / "scripts" / "skills" / "ctx_branch.sh",
+            ROOT / "skills" / "codex" / "ctx-delete" / "scripts" / "skills" / "ctx_delete.sh",
+            ROOT / "skills" / "codex" / "ctx-list" / "scripts" / "skills" / "ctx_cli_skill.sh",
+            ROOT / "skills" / "codex" / "ctx-resume" / "scripts" / "skills" / "ctx_resume.sh",
+            ROOT / "skills" / "codex" / "ctx-start" / "scripts" / "skills" / "ctx_start.sh",
+        ]
+        removed = [
+            ROOT / "skills" / "claude" / "ctx-list" / "ctx-list",
+            ROOT / "skills" / "claude" / "ctx-resume" / "ctx-resume",
+            ROOT / "skills" / "claude" / "ctx-start" / "ctx-start",
+            ROOT / "skills" / "codex" / "ctx-list" / "ctx-list",
+            ROOT / "skills" / "codex" / "ctx-resume" / "ctx-resume",
+            ROOT / "skills" / "codex" / "ctx-start" / "ctx-start",
+        ]
+        for path in wrappers:
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("shared/ctx_dispatch.sh", text)
+            self.assertIn("ctx_skill_exec", text)
+        for path in removed:
+            self.assertFalse(path.exists() or path.is_symlink(), f"unexpected leftover skill link: {path}")
 
     def test_skills_sh_wrapper_bootstraps_when_ctx_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -555,6 +1178,84 @@ printf 'installed\\n' > "$HOME/install-ran.txt"
         pythonpath = env.get("PYTHONPATH", "")
         self.assertIn(str(ROOT), pythonpath)
 
+    def test_run_ctx_propagates_resolved_db_path_to_subprocess_env(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_dir = Path(tmp)
+            local_db = repo_dir / ".contextfun" / "context.db"
+            local_db.parent.mkdir(parents=True, exist_ok=True)
+            local_db.write_text("", encoding="utf-8")
+            captured = {}
+
+            def fake_check_output(cmd, **kwargs):
+                captured["cmd"] = cmd
+                captured["cwd"] = kwargs.get("cwd")
+                captured["env"] = kwargs.get("env", {})
+                return b"ok\n"
+
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+                ctx_cmd, "_command_cwd", return_value=str(repo_dir)
+            ), mock.patch.object(ctx_cmd.subprocess, "check_output", side_effect=fake_check_output):
+                result = ctx_cmd.run_ctx(["list"])
+
+        self.assertEqual(result, "ok\n")
+        self.assertEqual(captured["cwd"], str(repo_dir))
+        self.assertEqual(captured["env"].get("ctx_DB"), str(local_db.resolve()))
+        self.assertNotIn("CONTEXTFUN_DB", captured["env"])
+        self.assertIn(str(local_db.resolve()), captured["cmd"])
+
+    def test_ctx_cmd_accepts_legacy_contextfun_db_env(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        legacy_db = Path(self.tmpdir.name) / "legacy.db"
+        with mock.patch.dict(
+            os.environ,
+            {"CONTEXTFUN_DB": str(legacy_db)},
+            clear=True,
+        ), mock.patch.object(ctx_cmd, "_current_or_parent_db", return_value=None):
+            resolved = ctx_cmd._db_path()
+        self.assertEqual(resolved, legacy_db.resolve())
+
+    def test_core_cli_uses_ctx_db_env_without_explicit_db(self):
+        env = {**self.env, "PYTHONPATH": str(ROOT)}
+        init_proc = subprocess.run(
+            [sys.executable, "-m", "contextfun", "init"],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(init_proc.returncode, 0, init_proc.stderr)
+        self.assertTrue(self.db_path.exists())
+        ensure_proc = subprocess.run(
+            [sys.executable, "-m", "contextfun", "workstream-ensure", "env-demo", "--json"],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(ensure_proc.returncode, 0, ensure_proc.stderr)
+        payload = json.loads(ensure_proc.stdout)
+        self.assertEqual(payload["slug"], "env-demo")
+
+    def test_workstream_ensure_rolls_back_if_set_current_fails(self):
+        from contextfun import cli as ctx_cli
+
+        args = argparse.Namespace(
+            db=str(self.db_path),
+            name="demo-pull",
+            slug=None,
+            workspace=None,
+            set_current=True,
+            unique_if_exists=False,
+            json=False,
+        )
+        with mock.patch.object(ctx_cli, "_set_current_workstream", side_effect=PermissionError("denied")):
+            with self.assertRaises(PermissionError):
+                ctx_cli.cmd_workstream_ensure(args)
+        with sqlite3.connect(str(self.db_path)) as conn:
+            row = conn.execute("SELECT id FROM workstream WHERE slug = ?", ("demo-pull",)).fetchone()
+        self.assertIsNone(row)
+
     def test_installed_ctx_cmd_imports_from_prefix_lib_layout(self):
         with tempfile.TemporaryDirectory() as tmp:
             prefix = Path(tmp)
@@ -577,7 +1278,7 @@ printf 'installed\\n' > "$HOME/install-ran.txt"
             proc = subprocess.run(
                 [sys.executable, str(bin_dir / "ctx.py"), "list"],
                 cwd=str(prefix),
-                env={**self.env, "CONTEXTFUN_DB": str(db_path)},
+                env={**self.env, "ctx_DB": str(db_path)},
                 capture_output=True,
                 text=True,
             )
@@ -622,7 +1323,7 @@ printf 'installed\\n' > "$HOME/install-ran.txt"
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(self.run_ctx_in(Path(tmp), "start", "temp-web-demo", "--no-auto-pull").returncode, 0)
         env = os.environ.copy()
-        env["CONTEXTFUN_DB"] = str(self.db_path)
+        env["ctx_DB"] = str(self.db_path)
         env["PYTHONPATH"] = str(ROOT)
         proc = subprocess.run(
             [

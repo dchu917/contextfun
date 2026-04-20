@@ -33,13 +33,13 @@ if [[ ! -d "$LIB_DIR/contextfun" ]]; then
   cat > "$BIN_DIR/ctx" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-PREFIX="__PREFIX__"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+BIN_DIR="$SCRIPT_DIR"
+PREFIX="$(cd "$BIN_DIR/.." && pwd -P)"
 LIB_DIR="$PREFIX/lib"
-BIN_DIR="$PREFIX/bin"
 export PYTHONPATH="$LIB_DIR${PYTHONPATH:+:$PYTHONPATH}"
 exec python3 "$BIN_DIR/ctx.py" "$@"
 SH
-  perl -0pi -e 's|__PREFIX__|'"$PREFIX"'|g' "$BIN_DIR/ctx"
   chmod +x "$BIN_DIR/ctx"
 fi
 
@@ -49,7 +49,7 @@ if [[ ! -f "$DB_PATH" ]]; then
 fi
 
 # Export env vars for the current shell
-export CONTEXTFUN_DB="$DB_PATH"
+export ctx_DB="$DB_PATH"
 export PATH="$BIN_DIR:$PATH"
 
 echo "ctx ready in ./ctx (DB: $DB_PATH). Commands available: ctx, python3 -m contextfun"
