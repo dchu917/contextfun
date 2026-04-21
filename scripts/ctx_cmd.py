@@ -1384,7 +1384,9 @@ def _resume_pack_text(
 ) -> str:
     preamble = (
         "You are joining an ongoing workstream. The following pack includes recent sessions and entries. "
-        "Read the pack and ask any clarifying questions before proceeding.\n\n"
+        "Treat this as a context load, not authorization to continue prior work automatically. "
+        "Read the pack, summarize briefly, and then wait for the user's next instruction. "
+        "Do not run tools or take actions unless the user explicitly asks.\n\n"
     )
     return preamble + workstream_pack(
         slug,
@@ -1504,10 +1506,12 @@ def _render_loaded_output(
         guidance_lines_md = [
             "- Assistant: make it explicit that new context from this conversation will now be appended to this workstream.",
             "- Assistant: if the user wants a separate path that does not change this workstream, tell them to create a branch first.",
+            "- Assistant: after summarizing, stop and wait for the user's next instruction. Do not continue the prior task or run tools on your own.",
         ]
         guidance_lines_text = [
             "- Assistant: make it explicit that new context from this conversation will now be appended to this workstream.",
             "- Assistant: if the user wants a separate path that does not change this workstream, tell them to create a branch first.",
+            "- Assistant: after summarizing, stop and wait for the user's next instruction. Do not continue the prior task or run tools on your own.",
         ]
 
     if fmt == "markdown":

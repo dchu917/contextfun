@@ -532,6 +532,8 @@ class CtxReleaseSmokeTests(unittest.TestCase):
         resumed = self.run_ctx("resume", "delete-demo", "--no-auto-pull", "--no-compress")
         self.assertEqual(resumed.returncode, 0, resumed.stderr)
         self.assertIn("Action: resumed new session for current codex transcript", resumed.stdout)
+        self.assertIn("Treat this as a context load, not authorization to continue prior work automatically.", resumed.stdout)
+        self.assertIn("after summarizing, stop and wait for the user's next instruction", resumed.stdout)
 
         deleted = self.run_ctx("delete", "delete-demo")
         self.assertEqual(deleted.returncode, 0, deleted.stderr)
