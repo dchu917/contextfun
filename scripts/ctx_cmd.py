@@ -72,26 +72,95 @@ def _augment_pythonpath(env: Dict[str, str]) -> None:
         env["PYTHONPATH"] = os.pathsep.join(paths)
 
 
-def run_ctx(args_list, input_data=None):
-    db_path = _db_path()
+def _default_home_db_path() -> Path:
+    ctx_home = Path(os.path.expanduser(os.getenv("CTX_HOME", "~/.contextfun"))).resolve()
+    return (ctx_home / "context.db").resolve()
+
+
+def _repo_local_db_path() -> Optional[Path]:
+    try:
+        cwd = Path(_command_cwd()).resolve()
+    except Exception:
+        return None
+    return (cwd / ".contextfun" / "context.db").resolve()
+
+
+def _set_runtime_db_override(path: Path) -> None:
+    os.environ["ctx_DB"] = str(path.resolve())
+
+
+def _ensure_db_parent(path: Path) -> None:
+    path.resolve().parent.mkdir(parents=True, exist_ok=True)
+
+
+def _readonly_db_error(output: str) -> bool:
+    return "readonly database" in (output or "").lower()
+
+
+def _repo_local_fallback_db(original_db: Path) -> Optional[Path]:
+    if _db_env_value():
+        return None
+    if _current_or_parent_db() is not None:
+        return None
+    if original_db.resolve() != _default_home_db_path():
+        return None
+    repo_db = _repo_local_db_path()
+    if repo_db is None or repo_db.resolve() == original_db.resolve():
+        return None
+    try:
+        _ensure_db_parent(repo_db)
+    except Exception:
+        return None
+    return repo_db
+
+
+def _run_ctx_once(db_path: Path, args_list, input_data=None) -> str:
+    _ensure_db_parent(db_path)
     cmd = [sys.executable, "-m", "contextfun"]
     cmd += ["--db", str(db_path)]
     cmd += args_list
+    env = os.environ.copy()
+    env["ctx_DB"] = str(db_path)
+    _augment_pythonpath(env)
+    out = subprocess.check_output(
+        cmd,
+        stderr=subprocess.STDOUT,
+        cwd=_command_cwd(),
+        env=env,
+        input=(input_data.encode() if isinstance(input_data, str) else None),
+    )
+    return out.decode()
+
+
+def run_ctx(args_list, input_data=None):
+    db_path = _db_path()
     try:
-        env = os.environ.copy()
-        env["ctx_DB"] = str(db_path)
-        _augment_pythonpath(env)
-        out = subprocess.check_output(
-            cmd,
-            stderr=subprocess.STDOUT,
-            cwd=_command_cwd(),
-            env=env,
-            input=(input_data.encode() if isinstance(input_data, str) else None),
-        )
-        return out.decode()
+        return _run_ctx_once(db_path, args_list, input_data=input_data)
     except subprocess.CalledProcessError as e:
-        sys.stderr.write(e.output.decode())
+        output = e.output.decode()
+        fallback_db = _repo_local_fallback_db(db_path) if _readonly_db_error(output) else None
+        if fallback_db is not None:
+            _set_runtime_db_override(fallback_db)
+            try:
+                return _run_ctx_once(fallback_db, args_list, input_data=input_data)
+            except subprocess.CalledProcessError as retry_error:
+                sys.stderr.write(retry_error.output.decode())
+                sys.exit(retry_error.returncode)
+        sys.stderr.write(output)
         sys.exit(e.returncode)
+    except OSError as e:
+        fallback_db = _repo_local_fallback_db(db_path)
+        if fallback_db is not None:
+            _set_runtime_db_override(fallback_db)
+            try:
+                return _run_ctx_once(fallback_db, args_list, input_data=input_data)
+            except subprocess.CalledProcessError as retry_error:
+                sys.stderr.write(retry_error.output.decode())
+                sys.exit(retry_error.returncode)
+            except OSError as retry_error:
+                print(str(retry_error), file=sys.stderr)
+                sys.exit(1)
+        raise
 
 
 def run_ctx_passthrough(args_list):
@@ -283,8 +352,7 @@ def _db_path() -> Path:
     local_db = _current_or_parent_db()
     if local_db is not None:
         return local_db
-    ctx_home = Path(os.path.expanduser(os.getenv("CTX_HOME", "~/.contextfun"))).resolve()
-    return (ctx_home / "context.db").resolve()
+    return _default_home_db_path()
 
 
 def lookup_workstream(name: str) -> Optional[Dict[str, object]]:

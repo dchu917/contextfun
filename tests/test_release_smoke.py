@@ -1541,6 +1541,71 @@ printf 'installed\\n' > "$HOME/install-ran.txt"
             resolved = ctx_cmd._db_path()
         self.assertEqual(resolved, legacy_db.resolve())
 
+    def test_run_ctx_retries_readonly_home_db_on_repo_local_db(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo_dir = tmp_path / "repo"
+            repo_dir.mkdir(parents=True, exist_ok=True)
+            home_db = (tmp_path / "home" / ".contextfun" / "context.db").resolve()
+            local_db = (repo_dir / ".contextfun" / "context.db").resolve()
+            calls = []
+
+            def fake_check_output(cmd, **kwargs):
+                calls.append(Path(cmd[cmd.index("--db") + 1]).resolve())
+                if len(calls) == 1:
+                    raise subprocess.CalledProcessError(
+                        1,
+                        cmd,
+                        output=b"sqlite3.OperationalError: attempt to write a readonly database\n",
+                    )
+                return b"ok\n"
+
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+                ctx_cmd, "_command_cwd", return_value=str(repo_dir)
+            ), mock.patch.object(
+                ctx_cmd, "_default_home_db_path", return_value=home_db
+            ), mock.patch.object(
+                ctx_cmd.subprocess, "check_output", side_effect=fake_check_output
+            ):
+                result = ctx_cmd.run_ctx(["list"])
+                resolved = ctx_cmd._db_path()
+                local_parent_exists = local_db.parent.exists()
+
+        self.assertEqual(result, "ok\n")
+        self.assertEqual(calls, [home_db, local_db])
+        self.assertEqual(resolved, local_db)
+        self.assertTrue(local_parent_exists)
+
+    def test_run_ctx_uses_repo_local_db_after_home_db_parent_error(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo_dir = tmp_path / "repo"
+            repo_dir.mkdir(parents=True, exist_ok=True)
+            home_db = (tmp_path / "home" / ".contextfun" / "context.db").resolve()
+            local_db = (repo_dir / ".contextfun" / "context.db").resolve()
+
+            def fake_run_once(db_path, args_list, input_data=None):
+                if Path(db_path).resolve() == home_db:
+                    raise PermissionError("operation not permitted")
+                return "ok\n"
+
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+                ctx_cmd, "_command_cwd", return_value=str(repo_dir)
+            ), mock.patch.object(
+                ctx_cmd, "_default_home_db_path", return_value=home_db
+            ), mock.patch.object(
+                ctx_cmd, "_run_ctx_once", side_effect=fake_run_once
+            ):
+                result = ctx_cmd.run_ctx(["list"])
+                resolved = ctx_cmd._db_path()
+                local_parent_exists = local_db.parent.exists()
+
+        self.assertEqual(result, "ok\n")
+        self.assertEqual(resolved, local_db)
+        self.assertTrue(local_parent_exists)
+
     def test_core_cli_uses_ctx_db_env_without_explicit_db(self):
         env = {**self.env, "PYTHONPATH": str(ROOT)}
         init_proc = subprocess.run(
