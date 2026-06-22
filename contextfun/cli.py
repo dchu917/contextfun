@@ -2037,7 +2037,7 @@ def cmd_pack(args: argparse.Namespace):
             lines.append("")
             lines.append("## Pinned context")
             for e in pinned_entries:
-                preview = (e["content"] or "").strip()
+                preview = _neutralize_pack_sentinels((e["content"] or "").strip())
                 if len(preview) > 500:
                     preview = preview[:497] + "..."
                 lines.append(f"- E{e['id']} S{e['session_id']} `{_entry_display_label(e)}`:\n\n  {preview}")
@@ -2053,7 +2053,7 @@ def cmd_pack(args: argparse.Namespace):
                     title += f" (types: {', '.join(sorted(focus))})"
                 lines.append(title)
                 for e in recent_entries:
-                    preview = (e["content"] or "").strip()
+                    preview = _neutralize_pack_sentinels((e["content"] or "").strip())
                     if len(preview) > 500:
                         preview = preview[:497] + "..."
                     lines.append(f"- E{e['id']} S{e['session_id']} `{_entry_display_label(e)}`:\n\n  {preview}")
@@ -2073,7 +2073,7 @@ def cmd_pack(args: argparse.Namespace):
             lines.append("")
             lines.append("Pinned context:")
             for e in pinned_entries:
-                preview = (e["content"] or "").strip().replace("\n", " ")
+                preview = _neutralize_pack_sentinels((e["content"] or "").strip().replace("\n", " "))
                 if len(preview) > 160:
                     preview = preview[:157] + "..."
                 lines.append(f"- E{e['id']} S{e['session_id']} {_entry_display_label(e)}: {preview}")
@@ -2086,11 +2086,18 @@ def cmd_pack(args: argparse.Namespace):
                 lines.append("")
                 lines.append("Recent entries:" + (f" (types: {', '.join(sorted(focus))})" if focus else ""))
                 for e in recent_entries:
-                    preview = (e["content"] or "").strip().replace("\n", " ")
+                    preview = _neutralize_pack_sentinels((e["content"] or "").strip().replace("\n", " "))
                     if len(preview) > 160:
                         preview = preview[:157] + "..."
                     lines.append(f"- E{e['id']} S{e['session_id']} {_entry_display_label(e)}: {preview}")
         print("\n".join(lines))
+
+
+def _neutralize_pack_sentinels(text: str) -> str:
+    # Prevent entry content from closing the outer <ctx-pack>…</ctx-pack> wrapper
+    # emitted by the resume skill (scripts/ctx_cmd.py). A zero-width space is
+    # invisible but breaks the literal tag match used by consumers.
+    return text.replace("</ctx-pack>", "</ctx-pack​>").replace("<ctx-pack>", "<ctx-pack​>")
 
 
 def _read_stdin_if_dash(text_arg):
